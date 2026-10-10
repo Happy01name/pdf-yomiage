@@ -257,8 +257,13 @@ function findRepeated(pages) {
 function markParagraphs(lines) {
   const inRange = (d, h) => d > h * 0.6 && d < h * 2.5;  // 1〜2文字分のずれ
   const gapAt = i => (i > 0 && i < lines.length) ? lines[i - 1].y - lines[i].y : 0;  // 行 i の直前の行間
-  const pageRights = lines.map(l => l.right).sort((a, b) => a - b);
-  const pageRight = pageRights[Math.floor(pageRights.length * 0.8)] ?? 0;          // ページのふつうの右端
+  // ページ（2段組みなら段ごと）のふつうの右端
+  const colRight = {};
+  for (const key of new Set(lines.map(l => l.col || ''))) {
+    const rs = lines.filter(l => (l.col || '') === key).map(l => l.right).sort((a, b) => a - b);
+    colRight[key] = rs[Math.floor(rs.length * 0.8)] ?? 0;
+  }
+  const pageRightOf = l => colRight[l.col || ''];
   lines.forEach((l, i) => {
     // 近く（前後4行）で左端の揃った行の、ふつうの右端より3文字分以上手前で終わっている行＝段落や箇条書きの項目の終わり。
     // ふつうの右端は上位20%の位置にする（OCR のゴミ文字で右に伸びた行に引きずられないように）。
@@ -274,8 +279,9 @@ function markParagraphs(lines) {
     // 次の行がすぐ下にあり、それより字下げされていて、ページの右端近くまで届いている＝段落の最初の行
     // （届かない行は、番号付き箇条書きの2行目や、入れ子の箇条書きの最後の項目などなので除く）
     const nextClose = !!next && gapAt(i + 1) > 0 && gapAt(i + 1) < l.h * 3;
-    l.indentStart = nextClose && inRange(l.x - next.x, l.h) && !l.endPara && l.right > pageRight - l.h * 3;
-    if (!prev) { l.newPara = l.indentStart; return; }      // ページの先頭は前ページから続くことがあるのでつなぐ
+    l.indentStart = nextClose && inRange(l.x - next.x, l.h) && !l.endPara && l.right > pageRightOf(l) - l.h * 3;
+    // ページの先頭や2段組みの右の段の先頭は、前ページや左の段から続くことがあるのでつなぐ
+    if (!prev || l.colStart) { l.newPara = l.indentStart; return; }
     const afterIndent = prev.indentStart && inRange(prev.x - l.x, l.h);  // 字下げした行の次の行
     // 左端が変わり、次の行もその位置に揃っている＝別のかたまり（1行だけのずれは OCR の誤差とみなす）
     const aligned = !next || Math.abs(next.x - l.x) <= l.h * 0.6;
@@ -304,7 +310,7 @@ function markListItems(lines) {
     let j = i + 1;
     while (j < lines.length && Math.abs(lines[j].x - lines[i].x) < h * 0.3 && !lines[j].newPara) j++;
     const before = lines[i - 1];
-    if (j - i >= 2 && before && lines[i].x - before.x > h) {
+    if (j - i >= 2 && before && lines[i].x - before.x > h && !lines[i].colStart) {  // 右の段の始まりは箇条書きではない
       const outer = lines.filter(o => o.x < lines[i].x - h * 0.5).map(o => o.right).sort((a, b) => a - b);
       const frameRight = Math.max(...lines.slice(i, j).map(l => l.right), outer.length ? outer[Math.floor(outer.length * 0.8)] : 0);
       for (let k = i; k < j - 1; k++) {
@@ -341,13 +347,19 @@ function markFigures(pages) {
   if (bodyLike.length < 5) return;
   const H = median(bodyLike.map(l => l.h));
   for (const lines of pages) {
-    const ref = lines.filter(l => bodyLike.includes(l));
-    const left = ref.length ? median(ref.map(l => l.x)) : median(bodyLike.map(l => l.x));        // 本文の左端
-    const right = ref.length ? median(ref.map(l => l.right)) : median(bodyLike.map(l => l.right)); // 本文の右端
-    const atLeftOf = l => l && l.x > left - H && l.x < left + H * 2.5;
+    // 2段組みのページは段ごとに、本文の左端・右端を求める
+    const cols = {};
+    for (const key of new Set(lines.map(l => l.col || ''))) {
+      const ref = lines.filter(l => (l.col || '') === key && bodyLike.includes(l));
+      cols[key] = ref.length >= 2
+        ? { left: median(ref.map(l => l.x)), right: median(ref.map(l => l.right)) }
+        : { left: median(bodyLike.map(l => l.x)), right: median(bodyLike.map(l => l.right)) };
+    }
+    const colOf = l => cols[l.col || ''];
+    const atLeftOf = l => l && l.x > colOf(l).left - H && l.x < colOf(l).left + H * 2.5;
     const normalSize = l => l.h > H * 0.7 && l.h < H * 1.4;
     // 本文の行：左端が本文の位置、右端が本文の幅いっぱい、本文と同じ大きさ、日本語の文
-    const isBodyLine = l => !!l && atLeftOf(l) && l.right > right - H * 2 && normalSize(l) && textStats(l.text).hira >= 0.15;
+    const isBodyLine = l => !!l && atLeftOf(l) && l.right > colOf(l).right - H * 2 && normalSize(l) && textStats(l.text).hira >= 0.15;
     let inFigure = false;  // 図のタイトルの後、本文の行（またはその直前の見出し）が出てくるまでは図の範囲
     lines.forEach((l, i) => {
       const s = textStats(l.text);
@@ -356,7 +368,7 @@ function markFigures(pages) {
         l.text = l.text.replace(/^[^■□◆●図表]{1,2}(?=[■□◆●])/, '');  // OCR で付いた先頭の余計な文字を消す
         l.fig = false; inFigure = true; return;
       }
-      const atLeft = atLeftOf(l);
+      const atLeft = atLeftOf(l), left = colOf(l).left;
       if (inFigure) {
         const heading = atLeft && normalSize(l) && s.hira >= 0.15 && isBodyLine(lines[i + 1]);
         if (!isBodyLine(l) && !heading) { l.fig = true; return; }
@@ -408,8 +420,12 @@ function buildParagraphs(lines, join = true) {
     if (/^(https?:\/\/|www\.)\S+$/.test(t)) { flush(); page = l.page; buf = t; flush(); return; }
     const next = lines[i + 1]?.text || '';
     if (l.newPara) flush();
-    // 短くて句読点で終わらない行は見出しなどとして独立させる
-    const heading = t.length < median * 0.6 && !/[、，,]$/.test(t) && !TERM.test(t) && !buf;
+    // 前後の行より短く、句読点で終わらない行は見出しなどとして独立させる
+    // （本全体の平均と比べると、2段組みの狭い段の行がみな短いと判定されるため、前後の行と比べる）
+    const prevLen = lines[i - 1]?.fig ? 0 : (lines[i - 1]?.text.length || 0);
+    const nextLen = lines[i + 1]?.fig ? 0 : next.length;
+    const ref = Math.max(prevLen, nextLen) || median;
+    const heading = t.length < ref * 0.6 && !/[、，,]$/.test(t) && !TERM.test(t) && !buf;
     if (page === null) page = l.page;
     buf = joinText(buf, t);
     if (heading || l.endPara) { flush(); return; }
@@ -433,6 +449,36 @@ function splitSentences(text) {
     if (p) out.push(p);
   }
   return out;
+}
+
+// 行を読む順に並べ直す。PDF 内の記録順は見た目の順と違うことがある（本文の後にボックスをまとめて記録するなど）ので、
+// 見た目の位置で上から下へ並べる。2段組みのページは、左の段を上から下まで読んでから右の段へ進む。
+// ページ幅いっぱいの行（見出しや罫線など）は段の区切りとして、その位置で読む
+function orderLines(lines, pageWidth) {
+  const byY = (a, b) => Math.abs(a.y - b.y) < Math.min(a.h, b.h) * 0.5 ? a.x - b.x : b.y - a.y;
+  const hs = lines.map(l => l.h).sort((a, b) => a - b);
+  const H = hs[Math.floor(hs.length / 2)] || 10, mid = pageWidth / 2;
+  const isLeft = l => l.right <= mid + H * 0.5, isRight = l => l.x >= mid - H * 0.5;
+  const long = l => [...l.text].length >= 10;
+  const twoCol = lines.filter(l => isLeft(l) && long(l)).length >= 5 && lines.filter(l => isRight(l) && long(l)).length >= 5;
+  lines.sort(byY);
+  for (const l of lines) { l.col = undefined; l.colStart = false; }
+  if (!twoCol) return;
+  const out = [];
+  let band = [];
+  const flushBand = () => {
+    const left = band.filter(isLeft), right = band.filter(l => !isLeft(l));
+    left.forEach(l => l.col = 'L'); right.forEach(l => l.col = 'R');
+    if (left.length && right.length) right[0].colStart = true;  // 右の段の先頭（左の段の最後から続く）
+    out.push(...left, ...right);
+    band = [];
+  };
+  for (const l of lines) {
+    if (!isLeft(l) && !isRight(l)) { flushBand(); l.col = 'S'; out.push(l); }  // 両方の段にまたがる行
+    else band.push(l);
+  }
+  flushBand();
+  lines.splice(0, lines.length, ...out);
 }
 
 // ---------- PDF の読み込み ----------
@@ -472,9 +518,7 @@ async function loadPdf(file) {
     }
     push();
     for (const l of lines) l.text = cleanLine(l.text);
-    // PDF 内の文字の記録順は見た目の順と違うことがある（本文の後にボックスや箇条書きをまとめて記録するなど）。
-    // 見た目の位置で、上から下へ、同じ高さなら左から右へ並べ直す
-    lines.sort((a, b) => Math.abs(a.y - b.y) < Math.min(a.h, b.h) * 0.5 ? a.x - b.x : b.y - a.y);
+    orderLines(lines, page.view[2] - page.view[0]);
     pages.push(lines);
   }
 
