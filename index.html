@@ -129,6 +129,7 @@
     <textarea id="pasteArea" placeholder="Gmailなどの文章をここに貼り付け"></textarea>
     <div class="row">
       <button id="pasteRead" class="primary">このテキストを読む</button>
+      <button id="pasteClear">クリア</button>
       <label><input type="checkbox" id="joinLines" checked> 文の途中の改行をつなげる</label>
     </div>
   </div>
@@ -669,6 +670,8 @@ let dict = store.get('dict', []);   // [{ from, to }]
 function fixReading(t) {
   for (const { from, to } of [...dict].sort((a, b) => b.from.length - a.from.length)) t = t.split(from).join(to);
   if (store.get('autoHito', true)) t = READING_RULES.reduce((s, [re, to]) => s.replace(re, to), t);
+  // 「々」を「くりかえし」と読むことがあるので、直前の漢字に置き換える（楽々→楽楽、時々→時時）
+  t = t.replace(/([㐀-鿿])々/g, '$1$1');
   // URL は1文字ずつ読むと長いので「リンク」とだけ読む
   t = t.replace(/(https?:\/\/|www\.)[!-~]+/g, 'リンク');
   // 中黒「・」は音声エンジンが区切らずに続けて読むことがあるので、日本語の言葉の間なら読点にする
@@ -801,6 +804,7 @@ $('pasteToggle').onclick = () => {
   if (open) $('pasteArea').focus({ preventScroll: true });
 };
 $('pasteRead').onclick = loadPasted;
+$('pasteClear').onclick = () => { $('pasteArea').value = ''; $('pasteArea').focus({ preventScroll: true }); };
 $('skipFig').checked = store.get('skipFig', true);
 $('skipFig').onchange = () => {
   store.set('skipFig', $('skipFig').checked);
