@@ -102,6 +102,7 @@
   <input id="fileInput" type="file" accept="application/pdf,.pdf" hidden>
   <button id="pasteToggle">テキストを貼り付け</button>
   <button id="dictToggle">読み方辞書</button>
+  <button id="copyAll" title="表示中の文章をすべてコピーします（図・表の部分は除く）">全文コピー</button>
   <label class="opt" title="スキャンした本などで、図や表の中の文字（文字化けのようなもの）を読み飛ばします"><input type="checkbox" id="skipFig"> 図や表を読まない</label>
   <span id="fileName"></span>
 </header>
@@ -848,7 +849,25 @@ $('pasteToggle').onclick = () => {
   if (open) $('pasteArea').focus({ preventScroll: true });
 };
 $('pasteRead').onclick = loadPasted;
-$('pasteClear').onclick = () => { $('pasteArea').value = ''; $('pasteArea').focus({ preventScroll: true }); };
+// 全文コピー：表示中の文章を段落ごとに空行で区切ってコピーする（図・表として読み飛ばす部分は除く）
+$('copyAll').onclick = async () => {
+  const paras = currentDoc?.paras.filter(p => !p.skip).map(p => p.text) || [];
+  if (!paras.length) { setStatus('コピーする文章がありません'); return; }
+  const text = paras.join('\n\n');
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch {
+    // クリップボードの機能が使えない環境向け（古いブラウザなど）
+    const ta = document.createElement('textarea');
+    ta.value = text; ta.style.cssText = 'position:fixed;top:0;left:0;opacity:0';
+    document.body.appendChild(ta); ta.select();
+    const ok = document.execCommand('copy');
+    ta.remove();
+    if (!ok) { setStatus('コピーできませんでした'); return; }
+  }
+  setStatus(`全文をコピーしました（${text.length.toLocaleString()}文字）`);
+};
+$('pasteClear').onclick =() => { $('pasteArea').value = ''; $('pasteArea').focus({ preventScroll: true }); };
 $('skipFig').checked = store.get('skipFig', true);
 $('skipFig').onchange = () => {
   store.set('skipFig', $('skipFig').checked);
