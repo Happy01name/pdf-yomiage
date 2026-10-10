@@ -1,0 +1,968 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PDF読み上げ</title>
+<!-- iPhone / iPad の「ホーム画面に追加」でアプリとして開くための設定 -->
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-180.png">
+<link rel="icon" href="icon-192.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="PDF読み上げ">
+<meta name="theme-color" content="#2563eb">
+<script src="lib/pdf.min.js"></script>
+<style>
+  :root {
+    --bg: #fafaf7; --fg: #222; --muted: #777; --panel: #fff; --border: #ddd;
+    --accent: #2563eb; --hl: #fff3a3; --page: #999;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #1b1b1d; --fg: #e8e8e8; --muted: #999; --panel: #26262a; --border: #3a3a40;
+      --accent: #60a5fa; --hl: #5a4b00; --page: #777; }
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg);
+    font-family: "Hiragino Sans", "Yu Gothic UI", "Meiryo", sans-serif; }
+  header { position: sticky; top: 0; z-index: 2; background: var(--panel);
+    border-bottom: 1px solid var(--border); padding: 8px 16px;
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  header h1 { font-size: 16px; margin: 0 8px 0 0; }
+  #fileName { color: var(--muted); font-size: 13px; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; max-width: 40vw; }
+  button, select, input { font: inherit; font-size: 14px; color: var(--fg); background: var(--panel);
+    border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; }
+  button { cursor: pointer; }
+  button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+  main { max-width: 820px; margin: 0 auto; padding: 16px 16px 140px; }
+  #text { font-size: 18px; line-height: 1.9; }
+  #text p { margin: 0 0 0.8em; }
+  #text p.fig { font-size: 12px; line-height: 1.5; color: var(--muted); opacity: 0.6;
+    border-left: 3px solid var(--border); padding-left: 8px; word-break: break-all; }
+  #text p.fig::before { content: '図・表（読み上げません）　'; font-weight: bold; }
+  .opt { font-size: 13px; color: var(--muted); white-space: nowrap; }
+  .s { cursor: pointer; border-radius: 3px; }
+  .s:hover { background: color-mix(in srgb, var(--hl) 50%, transparent); }
+  .s.cur { background: var(--hl); }
+  .pg { color: var(--page); font-size: 12px; text-align: center; margin: 1.2em 0 0.6em;
+    border-top: 1px dashed var(--border); padding-top: 4px; }
+  #drop { border: 2px dashed var(--border); border-radius: 12px; padding: 40px 16px;
+    text-align: center; color: var(--muted); }
+  #drop.over { border-color: var(--accent); color: var(--accent); }
+  /* 貼り付けと読み方辞書の画面は、上部のボタンの下に固定して重ねる（開いても本文の表示位置が動かないように） */
+  #pasteBox, #dictBox { position: fixed; top: calc(var(--hdr, 56px) + 8px); left: 50%; transform: translateX(-50%);
+    width: min(820px, calc(100% - 32px)); z-index: 3; max-height: 60vh; overflow: auto;
+    box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2); }
+  #pasteBox { display: none; padding: 12px; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 8px; }
+  #pasteBox textarea { width: 100%; height: 200px; font: inherit; font-size: 15px; padding: 8px;
+    color: var(--fg); background: var(--panel); border: 1px solid var(--border); border-radius: 6px; }
+  #pasteBox .row { display: flex; gap: 8px; align-items: center; margin-top: 8px; flex-wrap: wrap; }
+  #dictBox { display: none; margin-bottom: 16px; padding: 12px; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 8px; }
+  #dictBox h2 { font-size: 15px; margin: 0 0 8px; }
+  #dictBox .row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
+  #dictBox input[type=text] { width: 10em; }
+  #dictBox .hint { font-size: 12px; color: var(--muted); margin: 0 0 8px; }
+  #dictList { width: 100%; border-collapse: collapse; font-size: 15px; margin-bottom: 8px; }
+  #dictList td { border-top: 1px solid var(--border); padding: 4px 6px; }
+  #dictList td.ops { text-align: right; white-space: nowrap; }
+  #dictList button { padding: 2px 8px; font-size: 12px; }
+  #dictBox details { margin-top: 8px; font-size: 13px; }
+  #dictBulk { width: 100%; height: 120px; font: inherit; font-size: 14px; margin-top: 6px; padding: 6px;
+    color: var(--fg); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; }
+  footer { position: fixed; bottom: 0; left: 0; right: 0; z-index: 2; background: var(--panel);
+    border-top: 1px solid var(--border); padding: 8px 16px calc(8px + env(safe-area-inset-bottom));
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: center; }
+  footer .grp { display: flex; gap: 6px; align-items: center; }
+  #playBtn { min-width: 90px; }
+  #voice { max-width: 220px; }
+  #status { color: var(--muted); font-size: 13px; width: 100%; text-align: center; }
+  label { font-size: 13px; color: var(--muted); }
+  #pageJump { width: 70px; }
+  .slider { width: 300px; max-width: 52vw; }
+  .slider input { width: 100%; margin: 0; padding: 0; border: none; background: none; }
+  /* 目盛りの数字を、つまみの中心位置（両端はつまみ半径ぶん内側）に合わせる */
+  .ticks { display: flex; justify-content: space-between; padding: 0 2px; font-size: 10px;
+    color: var(--muted); line-height: 1; }
+  .ticks span { width: 0; display: flex; justify-content: center; }
+  .step { padding: 4px 10px; font-weight: bold; }
+  #rateVal { min-width: 3.5em; font-variant-numeric: tabular-nums; }
+  .mode { font-size: 12px; padding: 3px 10px; border-radius: 12px; border: 1px solid var(--accent);
+    color: var(--accent); white-space: nowrap; }
+  .mode.off { border-color: var(--muted); color: var(--muted); }
+  .mode:disabled { opacity: 0.6; cursor: wait; }
+</style>
+</head>
+<body>
+<header>
+  <h1>PDF読み上げ</h1>
+  <button id="openBtn" class="primary">PDFを開く</button>
+  <input id="fileInput" type="file" accept="application/pdf,.pdf" hidden>
+  <button id="pasteToggle">テキストを貼り付け</button>
+  <button id="dictToggle">読み方辞書</button>
+  <label class="opt" title="スキャンした本などで、図や表の中の文字（文字化けのようなもの）を読み飛ばします"><input type="checkbox" id="skipFig"> 図や表を読まない</label>
+  <span id="fileName"></span>
+</header>
+
+<main>
+  <div id="dictBox">
+    <h2>読み方辞書</h2>
+    <p class="hint">読み間違える言葉と、その読み方を登録します。本文の言葉を選択してから「読み方辞書」を押すと、表記の欄に入ります。画面の表示は変わりません。</p>
+    <div class="row">
+      <input id="dictFrom" type="text" placeholder="表記（例：利用者）">
+      <span>→</span>
+      <input id="dictTo" type="text" placeholder="読み（例：りようしゃ）">
+      <button id="dictTry">試し読み</button>
+      <button id="dictAdd" class="primary">追加</button>
+    </div>
+    <table id="dictList"></table>
+    <label><input type="checkbox" id="autoHito" checked> 「人の」「人が」などの「人」を自動で「ひと」と読む</label>
+    <details>
+      <summary>まとめて編集（ほかの端末へコピーするとき）</summary>
+      <textarea id="dictBulk" placeholder="1行に1語、「表記=読み」の形で書きます&#10;例）利用者=りようしゃ"></textarea>
+      <button id="dictBulkSave">この内容で保存</button>
+    </details>
+  </div>
+  <div id="pasteBox">
+    <textarea id="pasteArea" placeholder="Gmailなどの文章をここに貼り付け"></textarea>
+    <div class="row">
+      <button id="pasteRead" class="primary">このテキストを読む</button>
+      <label><input type="checkbox" id="joinLines" checked> 文の途中の改行をつなげる</label>
+    </div>
+  </div>
+  <div id="drop">PDFをここにドラッグ＆ドロップ<br>または「PDFを開く」</div>
+  <div id="text"></div>
+</main>
+
+<footer>
+  <div class="grp">
+    <button id="prevBtn" title="前の文">⏮</button>
+    <button id="playBtn" class="primary">▶ 再生</button>
+    <button id="nextBtn" title="次の文">⏭</button>
+  </div>
+  <div class="grp">
+    <button id="modeBtn" class="mode" title="クリックでオンライン用／オフライン用を切り替え"></button>
+    <label for="rate">速度</label>
+    <button id="rateDown" class="step" title="0.1遅く">−</button>
+    <div class="slider">
+      <input id="rate" type="range" min="0.5" max="3" step="0.1" value="1.2" list="rateTicks">
+      <datalist id="rateTicks">
+        <option value="0.5"></option><option value="1"></option><option value="1.5"></option>
+        <option value="2"></option><option value="2.5"></option><option value="3"></option>
+      </datalist>
+      <div class="ticks"><span>0.5</span><span>1.0</span><span>1.5</span><span>2.0</span><span>2.5</span><span>3.0</span></div>
+    </div>
+    <button id="rateUp" class="step" title="0.1速く">＋</button>
+    <span id="rateVal">1.2倍</span>
+  </div>
+  <div class="grp">
+    <select id="voice"></select>
+  </div>
+  <div class="grp">
+    <label for="pageJump">ページ</label>
+    <input id="pageJump" type="number" min="1" inputmode="numeric">
+    <button id="jumpBtn">移動</button>
+  </div>
+  <div id="status">文をクリック（タップ）すると、そこから読み上げます</div>
+</footer>
+
+<script>
+const $ = id => document.getElementById(id);
+
+// ---------- 設定の保存（使えない環境でも動くように） ----------
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch {} }
+};
+
+// ---------- PDF.js の準備（部品はすべて lib/ に同梱。ネット接続なしで動く） ----------
+// file:// で開いた場合、ブラウザは Worker や fetch でのファイル読み込みを禁止するため、
+// worker は通常の <script> として読み込み（メインスレッドで動作）、CMap は JS に埋め込んだものを使う
+const loadScript = src => new Promise((ok, ng) => {
+  const s = document.createElement('script');
+  s.src = src; s.onload = ok; s.onerror = () => ng(new Error(src + ' を読み込めません'));
+  document.head.appendChild(s);
+});
+let pdfReady = null;
+const preparePdfjs = () => pdfReady ??= (async () => {
+  if (location.protocol === 'file:') await loadScript('lib/pdf.worker.min.js');
+  else pdfjsLib.GlobalWorkerOptions.workerSrc = 'lib/pdf.worker.min.js';
+  await loadScript('lib/pdf.cmaps.js');
+})();
+
+class EmbeddedCMapReaderFactory {
+  async fetch({ name }) {
+    const b64 = window.PDF_CMAPS?.[name];
+    if (!b64) throw new Error('CMap がありません: ' + name);
+    const bin = atob(b64), data = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) data[i] = bin.charCodeAt(i);
+    return { cMapData: data, compressionType: 1 /* BINARY */ };
+  }
+}
+
+// ---------- テキスト整形 ----------
+const CJK = '\\u3000-\\u30ff\\u3400-\\u9fff\\uf900-\\ufaff\\uff00-\\uffef';
+const reCjkSpace = new RegExp(`([${CJK}])[ \\t]+(?=[${CJK}])`, 'g');
+const TERM = /[。！？!?．]$|[。！？!?][」』）)]$/;
+
+// PDF には、見た目は漢字なのに中身は「部首」などの別の文字（例：⼈ U+2F08、⽤ U+2F64）が入っていることがある。
+// 音声エンジンはこれを読めずに飛ばすので、普通の漢字に置き換える
+const RADICAL_SUPPLEMENT = {  // CJK部首補助（Unicode の正規化では変換されないもの）
+  '⺠': '民', '⻁': '虎', '⻄': '西', '⻆': '角', '⻊': '足', '⻑': '長', '⻘': '青', '⻝': '食',
+  '⻣': '骨', '⻤': '鬼', '⻨': '麦', '⻩': '黄', '⻫': '斉', '⻭': '歯', '⻯': '竜', '⻲': '亀'
+};
+function fixKanji(s) {
+  return s
+    .replace(/[⼀-⿟豈-﫿]|[\u{2F800}-\u{2FA1F}]/gu, ch => ch.normalize('NFKC'))  // 康熙部首・互換漢字
+    .replace(/[⺀-⻿]/g, ch => RADICAL_SUPPLEMENT[ch] || ch.normalize('NFKC'))
+    // 中黒に似た別の記号（‧ U+2027、· U+00B7、･ U+FF65、∙ U+2219、⋅ U+22C5）を普通の中黒「・」にそろえる
+    .replace(/[‧·･∙⋅]/g, '・');
+}
+
+function cleanLine(s) {
+  return fixKanji(s).replace(/ /g, ' ').replace(reCjkSpace, '$1').replace(/[ \t]+/g, ' ')
+    .replace(/ ?　[　 ]*/g, '　')                  // 全角スペースの連続は1つにまとめる
+    .replace(/([A-Za-z0-9,.])　(?=[A-Za-z0-9])/g, '$1 ')     // 英数字の間は普通の空白（OCR が単語の途中に入れることがある）
+    .trim();
+}
+
+// 2行をつなぐ（日本語はそのまま、英単語同士は空白、行末ハイフンは除去）
+function joinText(a, b) {
+  if (!a) return b;
+  if (/[A-Za-z]-$/.test(a) && /^[a-z]/.test(b)) return a.slice(0, -1) + b;
+  if (/[A-Za-z0-9,;:]$/.test(a) && /^[A-Za-z0-9(]/.test(b)) return a + ' ' + b;
+  return a + b;
+}
+
+// ページ番号だけの行
+const isPageNum = s => /^[-–—(（]?\s*(p\.?\s*)?\d{1,4}\s*[-–—)）]?$/i.test(s) || /^\d+\s*\/\s*\d+$/.test(s);
+
+// 各ページの先頭・末尾に繰り返し出てくる行（ヘッダー・フッター）を検出
+function findRepeated(pages) {
+  if (pages.length < 3) return new Set();
+  const count = new Map();
+  for (const lines of pages) {
+    const cand = new Set([...lines.slice(0, 2), ...lines.slice(-2)].map(l => l.replace(/\d+/g, '#')));
+    for (const c of cand) count.set(c, (count.get(c) || 0) + 1);
+  }
+  const th = Math.max(3, pages.length * 0.3);
+  return new Set([...count].filter(([k, n]) => n >= th && k.length < 60).map(([k]) => k));
+}
+
+// 1ページ分の行に、段落の始まり（newPara）と終わり（endPara）の印を付ける。
+// ボックスや箇条書きは本文と左端の位置が違うので、ページ全体ではなく前後の行との位置関係で判定する
+function markParagraphs(lines) {
+  const inRange = (d, h) => d > h * 0.6 && d < h * 2.5;  // 1〜2文字分のずれ
+  const gapAt = i => (i > 0 && i < lines.length) ? lines[i - 1].y - lines[i].y : 0;  // 行 i の直前の行間
+  const pageRights = lines.map(l => l.right).sort((a, b) => a - b);
+  const pageRight = pageRights[Math.floor(pageRights.length * 0.8)] ?? 0;          // ページのふつうの右端
+  lines.forEach((l, i) => {
+    // 近く（前後4行）で左端の揃った行の、ふつうの右端より3文字分以上手前で終わっている行＝段落や箇条書きの項目の終わり。
+    // ふつうの右端は上位20%の位置にする（OCR のゴミ文字で右に伸びた行に引きずられないように）。
+    // 行末が英数字や開きかっこなら、折り返しの都合で早く改行しただけなので終わりとみなさない（例：「（p.」→「150）」）
+    const rights = lines.slice(Math.max(0, i - 4), i + 5)
+      .filter(o => Math.abs(o.x - l.x) < l.h * 2.5).map(o => o.right).sort((a, b) => a - b);
+    const typical = rights[Math.floor(rights.length * 0.8)];
+    l.endPara = rights.length >= 3 && l.right < typical - l.h * 3 && !/[A-Za-z0-9.,(（「『［\[]$/.test(l.text)
+      && (i < lines.length - 1 || TERM.test(l.text));  // ページ最終行は句点で終わるときだけ（次ページへ続くことが多い）
+  });
+  lines.forEach((l, i) => {
+    const prev = lines[i - 1], next = lines[i + 1];
+    // 次の行がすぐ下にあり、それより字下げされていて、ページの右端近くまで届いている＝段落の最初の行
+    // （届かない行は、番号付き箇条書きの2行目や、入れ子の箇条書きの最後の項目などなので除く）
+    const nextClose = !!next && gapAt(i + 1) > 0 && gapAt(i + 1) < l.h * 3;
+    l.indentStart = nextClose && inRange(l.x - next.x, l.h) && !l.endPara && l.right > pageRight - l.h * 3;
+    if (!prev) { l.newPara = l.indentStart; return; }      // ページの先頭は前ページから続くことがあるのでつなぐ
+    const afterIndent = prev.indentStart && inRange(prev.x - l.x, l.h);  // 字下げした行の次の行
+    // 左端が変わり、次の行もその位置に揃っている＝別のかたまり（1行だけのずれは OCR の誤差とみなす）
+    const aligned = !next || Math.abs(next.x - l.x) <= l.h * 0.6;
+    // ただし1文字分を超える大きなずれ（入れ子の箇条書きから戻る行など）は、次の行が揃っていなくても別のかたまり
+    const shift = Math.abs(l.x - prev.x);
+    const shifted = !afterIndent && ((shift > l.h * 0.6 && aligned) || shift > l.h * 1.2);
+    // 前後の行間より明らかに広い、または上に戻った（段組みやボックスの読み順）＝別のかたまり
+    const g = gapAt(i), near = [gapAt(i - 1), gapAt(i + 1)].filter(v => v > 0);
+    // （前後の行間は広いほうと比べる。図の中の文字などが挟まって一方だけ狭くなることがあるため）
+    const farBelow = g <= 0 || (near.length > 0 && g > Math.max(...near) * 1.4);
+    const bullet = /^[・•●○◆◇■□▪▶►‣⁃\-－]/.test(l.text);  // 文字の箇条書き記号
+    l.newPara = l.indentStart || shifted || farBelow || bullet;
+  });
+  markListItems(lines);
+}
+
+// 箇条書きの点が図形で描かれていると文字として取れないため、位置から項目の区切りを推定する。
+// 前の文章より右から始まり左端の揃った行のかたまりを箇条書きとみなし、その中で
+// 行末が読点でなく、枠の右端まで届いていない行を項目の終わりとする。
+// 枠の右端は、箇条書きより左から始まる周りの文章（本文やボックスの文）の右端から求める
+// （箇条書きの中の最長の行を基準にすると、最長の項目の次の項目が折り返しの続きと誤判定されるため）
+function markListItems(lines) {
+  let i = 0;
+  while (i < lines.length) {
+    const h = lines[i].h;
+    let j = i + 1;
+    while (j < lines.length && Math.abs(lines[j].x - lines[i].x) < h * 0.3 && !lines[j].newPara) j++;
+    const before = lines[i - 1];
+    if (j - i >= 2 && before && lines[i].x - before.x > h) {
+      const outer = lines.filter(o => o.x < lines[i].x - h * 0.5).map(o => o.right).sort((a, b) => a - b);
+      const frameRight = Math.max(...lines.slice(i, j).map(l => l.right), outer.length ? outer[Math.floor(outer.length * 0.8)] : 0);
+      for (let k = i; k < j - 1; k++) {
+        const l = lines[k];
+        if (!/[、，,A-Za-z0-9(（「『]$/.test(l.text) && l.right < frameRight - h) l.endPara = true;
+      }
+    }
+    i = j;
+  }
+}
+
+// ---------- 図や表の判定 ----------
+// スキャンした本などでは、本文の途中に図や表があり、OCR が図の中の文字（目盛り、ラベル、絵を誤認識した記号）も
+// 取り出してしまう。本文の行の特徴（文字の大きさ・左端の位置・日本語らしさ）から外れる行を図や表とみなす
+// 図のタイトル（「■図1 〜」「図1　〜」など）は読む。本文の「図1の〜」は対象外
+// （OCR で先頭に余計な文字が1〜2字付くことがある：「国■図6」など）
+const CAPTION = /^.{0,2}[■□◆●]\s*[図表]\s*[0-9０-９]|^[図表]\s*[0-9０-９]+[\s　]/;
+function textStats(t) {
+  const ch = [...t.replace(/[\s　]/g, '')], n = ch.length || 1;
+  const c = re => ch.filter(x => re.test(x)).length;
+  return {
+    n: ch.length,
+    hira: c(/[぀-ゟ]/) / n,
+    half: c(/[｡-ﾟ]/) / n,  // 半角カナ
+    ichi: c(/一/) / n,               // 漢字の「一」（表の罫線の誤認識で多くなる）
+    sym: c(/[^぀-ゟ゠-ヿ一-鿿A-Za-z0-9０-９Ａ-ｚ、。，．「」『』（）()【】［］\[\]〔〕〈〉《》＜＞・ー－～〜％%：:；;！？!?,.\/\-“”"'’　]/) / n
+  };
+}
+function markFigures(pages) {
+  const all = pages.flat();
+  const median = arr => { const s = [...arr].sort((a, b) => a - b); return s[Math.floor(s.length / 2)]; };
+  // 本文の文字の高さ（ひらがなを含む長めの行の中央値）
+  const bodyLike = all.filter(l => textStats(l.text).n >= 15 && textStats(l.text).hira >= 0.15);
+  if (bodyLike.length < 5) return;
+  const H = median(bodyLike.map(l => l.h));
+  for (const lines of pages) {
+    const ref = lines.filter(l => bodyLike.includes(l));
+    const left = ref.length ? median(ref.map(l => l.x)) : median(bodyLike.map(l => l.x));        // 本文の左端
+    const right = ref.length ? median(ref.map(l => l.right)) : median(bodyLike.map(l => l.right)); // 本文の右端
+    const atLeftOf = l => l && l.x > left - H && l.x < left + H * 2.5;
+    const normalSize = l => l.h > H * 0.7 && l.h < H * 1.4;
+    // 本文の行：左端が本文の位置、右端が本文の幅いっぱい、本文と同じ大きさ、日本語の文
+    const isBodyLine = l => !!l && atLeftOf(l) && l.right > right - H * 2 && normalSize(l) && textStats(l.text).hira >= 0.15;
+    let inFigure = false;  // 図のタイトルの後、本文の行（またはその直前の見出し）が出てくるまでは図の範囲
+    lines.forEach((l, i) => {
+      const s = textStats(l.text);
+      l.caption = CAPTION.test(l.text);
+      if (l.caption) {
+        l.text = l.text.replace(/^[^■□◆●図表]{1,2}(?=[■□◆●])/, '');  // OCR で付いた先頭の余計な文字を消す
+        l.fig = false; inFigure = true; return;
+      }
+      const atLeft = atLeftOf(l);
+      if (inFigure) {
+        const heading = atLeft && normalSize(l) && s.hira >= 0.15 && isBodyLine(lines[i + 1]);
+        if (!isBodyLine(l) && !heading) { l.fig = true; return; }
+        inFigure = false;
+      }
+      // 本文の段落の最後の短い行（左端から始まり句点で終わる、ひらがなの多い行）は、文字が小さく読み取られても本文
+      const lastLine = atLeft && TERM.test(l.text) && s.hira >= 0.3;
+      l.fig =
+        (l.h < H * 0.78 && !lastLine) ||                                     // 本文よりかなり小さい文字
+        (s.n <= 3 && !TERM.test(l.text) && Math.abs(l.x - left) > H * 2) ||  // 離れた位置の1〜3文字の断片
+        (s.n <= 2 && l.h > H * 1.6) ||                                        // 大きな1〜2文字（絵の誤認識）
+        (s.n >= 2 && (s.half >= 0.2 || s.sym >= 0.3)) ||                      // 半角カナや記号だらけ
+        (s.n >= 6 && s.ichi >= 0.2) ||                                        // 表の罫線を漢字の「一」と誤認識した行
+        (l.x > left + H * 6 && s.hira < 0.15);                                // 本文から大きく右に離れ、ひらがながほぼない
+    });
+  }
+}
+
+// 行の配列（{text, page}）→ 段落の配列（{page, text}）。
+// 図や表の行（fig）は本文の段落に混ぜず、読み上げない段落（skip）として、その時点の本文の段落の後に置く
+function buildParagraphs(lines, join = true) {
+  const lens = lines.filter(l => !l.fig).map(l => l.text.length).filter(n => n > 0).sort((a, b) => a - b);
+  const median = lens.length ? lens[Math.floor(lens.length / 2)] : 40;
+  const paras = [];
+  let buf = '', page = null, figs = [];
+  // ためた図の行は続くものを1つの段落（読まない）にまとめ、図のタイトルは独立した段落（読む）にする
+  const flushFigs = () => {
+    let group = [];
+    const out = () => { if (group.length) paras.push({ page: group[0].page, text: group.map(f => f.text).join('　'), skip: true }); group = []; };
+    for (const f of figs) {
+      if (f.caption) { out(); paras.push({ page: f.page, text: f.text }); }
+      else group.push(f);
+    }
+    out();
+    figs = [];
+  };
+  const flush = () => { if (buf.trim()) paras.push({ page, text: buf.trim() }); buf = ''; page = null; flushFigs(); };
+
+  lines.forEach((l, i) => {
+    const t = l.text;
+    // 図の行はためておき、本文の段落の区切りでまとめて1つの段落にする。
+    // 図のタイトルも、本文の文が途中なら、その文を読み終えてから読むようにためておく
+    if (l.fig || (l.caption && buf && !TERM.test(buf))) { figs.push(l); return; }
+    if (!buf) flushFigs();  // 本文の段落の途中でなければ、ためた図をここに置く
+    if (!t) { flush(); return; }
+    if (l.caption) { flush(); page = l.page; buf = t; flush(); return; }  // 図のタイトルは独立した1文
+    if (!join) { page = l.page; buf = t; flush(); return; }
+    // URL だけの行は前後の文とつなげず、独立させる
+    if (/^(https?:\/\/|www\.)\S+$/.test(t)) { flush(); page = l.page; buf = t; flush(); return; }
+    const next = lines[i + 1]?.text || '';
+    if (l.newPara) flush();
+    // 短くて句読点で終わらない行は見出しなどとして独立させる
+    const heading = t.length < median * 0.6 && !/[、，,]$/.test(t) && !TERM.test(t) && !buf;
+    if (page === null) page = l.page;
+    buf = joinText(buf, t);
+    if (heading || l.endPara) { flush(); return; }
+    if (TERM.test(t) && (t.length < median * 0.85 || /^[　 ]/.test(next) || !next)) flush();
+  });
+  flush();
+  return paras;
+}
+
+// 段落 → 文。長すぎる文は読点で分ける（iOS / Chrome が長文で止まるのを防ぐ）
+function splitSentences(text) {
+  const parts = text.match(/[^。！？!?]*[。！？!?]+[」』）)]*|[^。！？!?]+$/g) || [text];
+  const out = [];
+  for (let p of parts.map(s => s.trim()).filter(Boolean)) {
+    while (p.length > 120) {
+      let cut = Math.max(p.lastIndexOf('、', 100), p.lastIndexOf('，', 100), p.lastIndexOf(', ', 100));
+      if (cut < 30) cut = 100;
+      out.push(p.slice(0, cut + 1));
+      p = p.slice(cut + 1).trim();
+    }
+    if (p) out.push(p);
+  }
+  return out;
+}
+
+// ---------- PDF の読み込み ----------
+async function loadPdf(file) {
+  stop();
+  setStatus('読み込み中…');
+  $('fileName').textContent = file.name;
+  await preparePdfjs();
+  const data = new Uint8Array(await file.arrayBuffer());
+  const pdf = await pdfjsLib.getDocument({
+    data, cMapUrl: 'lib/', cMapPacked: true, CMapReaderFactory: EmbeddedCMapReaderFactory
+  }).promise;
+
+  const pages = [];
+  for (let n = 1; n <= pdf.numPages; n++) {
+    setStatus(`文字を取り出し中… ${n} / ${pdf.numPages} ページ`);
+    const page = await pdf.getPage(n);
+    const tc = await page.getTextContent();
+    // 行の組み立て。中身が空のアイテム（OCR済みPDFに多い）は無視し、y座標の変化で改行を判定する
+    const lines = [];
+    let cur = null, lastY = null;
+    const push = () => { if (cur && cur.text.trim()) lines.push(cur); cur = null; };
+    for (const it of tc.items) {
+      if (!('str' in it)) continue;
+      const y = it.transform[5], h = Math.abs(it.transform[3]) || 10;
+      if (it.str === '') continue;
+      // y が変わったら改行。ただし直前の文字のすぐ右に続く文字は、多少 y がずれていても同じ行とみなす
+      // （OCR では行の1文字目だけ高さがずれて認識されることがある）
+      const adjacent = cur && it.transform[4] - cur.right > -h * 0.5 && it.transform[4] - cur.right < h;
+      if (cur && lastY !== null && Math.abs(y - lastY) > h * (adjacent ? 1 : 0.5)) push();
+      if (!cur) cur = { text: '', x: it.transform[4], y, h, right: 0 };
+      // 幅の広い空白（全角スペース相当）は区切りとして残す。狭い空白は後で日本語の間なら詰める
+      cur.text += /^\s+$/.test(it.str) && (it.width || 0) >= h * 0.6 ? '　' : it.str;
+      cur.right = Math.max(cur.right, it.transform[4] + (it.width || 0));
+      lastY = y;
+      if (it.hasEOL) { push(); lastY = null; }
+    }
+    push();
+    for (const l of lines) l.text = cleanLine(l.text);
+    // PDF 内の文字の記録順は見た目の順と違うことがある（本文の後にボックスや箇条書きをまとめて記録するなど）。
+    // 見た目の位置で、上から下へ、同じ高さなら左から右へ並べ直す
+    lines.sort((a, b) => Math.abs(a.y - b.y) < Math.min(a.h, b.h) * 0.5 ? a.x - b.x : b.y - a.y);
+    pages.push(lines);
+  }
+
+  const rep = findRepeated(pages.map(ls => ls.map(l => l.text)));
+  pdfPages = pages.map(ls => ls.filter(l => !(isPageNum(l.text) || rep.has(l.text.replace(/\d+/g, '#')))));
+  pdfNumPages = pdf.numPages;
+  const paras = layoutPdf();
+  if (!paras.some(p => !p.skip)) {
+    setStatus('文字を取り出せませんでした（画像だけのPDFの可能性があります）');
+    return;
+  }
+  docKey = 'pos:' + file.name + ':' + file.size;
+  source = 'pdf';
+  showPanel(null);
+  render(paras, pdf.numPages);
+}
+
+// 取り出した行（ページ番号・ヘッダーを除いたもの）から段落を組み立てる。
+// 「図や表を読まない」の切り替え時に、PDF を読み直さずにやり直せるよう分けてある
+let pdfPages = null, pdfNumPages = 0;
+function layoutPdf() {
+  const skipFig = store.get('skipFig', true);
+  for (const l of pdfPages.flat()) { l.fig = false; l.caption = false; }
+  if (skipFig) markFigures(pdfPages);
+  const all = [];
+  let lastLine = null;
+  pdfPages.forEach((ls, i) => {
+    // 段落の判定は本文の行だけで行う（図の行や図のタイトルが挟まっても、前後の本文がつながるように）
+    const body = ls.filter(l => !l.fig && !l.caption);
+    markParagraphs(body);
+    // ページの1行目は前ページの最後の行から続くことがあるのでつなぐが、左端が大きく違うなら別のかたまり
+    if (body[0] && lastLine && Math.abs(body[0].x - lastLine.x) > body[0].h * 1.2) body[0].newPara = true;
+    if (body.length) lastLine = body[body.length - 1];
+    for (const l of ls) all.push({ text: l.text, page: i + 1, newPara: l.newPara, endPara: l.endPara, fig: l.fig, caption: l.caption });
+  });
+  return buildParagraphs(all, true);
+}
+
+function loadPasted() {
+  const raw = $('pasteArea').value;
+  if (!raw.trim()) return;
+  stop();
+  let lines = raw.split(/\r?\n/).map(t => ({ text: cleanLine(t), page: null }));
+  // PDF からコピーすると各行の間に空行が入ることがある。空行がほぼ全行にあるなら、
+  // 1行だけの空行は無視し、2行以上続く空行だけを段落の区切りとみなす
+  const filled = lines.filter(l => l.text).length, empty = lines.length - filled;
+  if ($('joinLines').checked && filled > 2 && empty >= filled * 0.6) {
+    const isEmpty = i => i >= 0 && i < lines.length && !lines[i].text;
+    lines = lines.filter((l, i) => l.text || isEmpty(i - 1) || isEmpty(i + 1));
+  }
+  const paras = buildParagraphs(lines, $('joinLines').checked);
+  $('fileName').textContent = '貼り付けたテキスト';
+  docKey = null;
+  render(paras, 0);
+  source = 'paste';
+  showPanel(null);
+  play(0);
+}
+
+// ---------- 表示 ----------
+let sentences = [];   // {text, page, el}
+let idx = 0, docKey = null, currentDoc = null;
+
+function render(paras, numPages) {
+  currentDoc = { paras, numPages, docKey, name: $('fileName').textContent };
+  const box = $('text');
+  box.innerHTML = '';
+  sentences = [];
+  $('drop').style.display = 'none';
+  let lastPage = null;
+  for (const p of paras) {
+    if (p.page && p.page !== lastPage) {
+      const d = document.createElement('div');
+      d.className = 'pg'; d.textContent = `p.${p.page}`;
+      box.appendChild(d); lastPage = p.page;
+    }
+    const el = document.createElement('p');
+    if (p.skip) {  // 図や表：薄く表示するだけで、読み上げの対象にしない
+      el.className = 'fig'; el.textContent = p.text; el.title = '図や表と判定したため読み上げません';
+      box.appendChild(el);
+      continue;
+    }
+    for (const s of splitSentences(p.text)) {
+      const span = document.createElement('span');
+      span.className = 's'; span.textContent = s;
+      span.dataset.i = sentences.length;
+      sentences.push({ text: s, page: p.page, el: span });
+      el.appendChild(span);
+    }
+    box.appendChild(el);
+  }
+  $('pageJump').max = numPages || '';
+  const saved = docKey ? store.get(docKey, 0) : 0;
+  idx = Math.min(saved, sentences.length - 1);
+  highlight(idx, true);
+  setStatus(`${sentences.length} 文` + (saved ? `（前回の位置から再開できます）` : '') + ' ／ 文をクリックするとそこから読みます');
+}
+
+function highlight(i, scroll) {
+  document.querySelectorAll('.s.cur').forEach(e => e.classList.remove('cur'));
+  const s = sentences[i];
+  if (!s) return;
+  s.el.classList.add('cur');
+  if (scroll) s.el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+}
+
+// ---------- 読み上げ ----------
+const synth = window.speechSynthesis;
+let playing = false, token = 0, voices = [], voiceList = [], playTimer = null;
+
+// 「オンライン用」と「オフライン用」で音声と速度を別々に記憶する。
+// 起動時は常にオフライン用。アプリ自体は外部と通信せず、オンライン用はボタンで選んだときだけ使う
+let mode = 'offline';
+const MODE_LABEL = { online: 'オンライン用', offline: 'オフライン用' };
+// 初期値：オンラインは Nanami（Edge）→ Google 日本語（Chrome）、オフラインは Haruka
+// （日本語版 Edge では Nanami が「七海」と表示されるため両方で探す）
+// iPhone / iPad には Haruka が無いので、高品質版（拡張・プレミアム）の音声 → Kyoko の順で選ぶ
+const DEFAULT_VOICE = {
+  online: [/nanami|七海/i, /google/i],
+  offline: [/haruka|春香/i, /enhanced|premium|拡張|プレミアム/i, /kyoko/i]
+};
+// iPhone / iPad（iPadOS は Mac として名乗るのでタッチ対応で判別）。日本語音声はすべて端末内で動く
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+if (IS_IOS) $('modeBtn').hidden = true;
+
+const jaVoices = () => {
+  const all = synth.getVoices(), ja = all.filter(v => /^ja/i.test(v.lang));
+  return ja.length ? ja : all;
+};
+// navigator.onLine は通信せずに分かる端末側の情報（仮想LANなどがあると未接続でも true になることがある）
+const canOnline = () => navigator.onLine && jaVoices().some(v => !v.localService);
+
+function loadVoices() {
+  voices = synth.getVoices();
+  const all = jaVoices();
+  // オンラインの音声が使えなくなったらオフライン用に切り替える
+  if (mode === 'online' && !canOnline()) { setMode('offline'); return; }
+  // 今のモードに合う音声だけを並べる
+  const fit = all.filter(v => (mode === 'online') !== v.localService);
+  voiceList = fit.length ? fit : all;
+  const sel = $('voice');
+  sel.innerHTML = '';
+  for (const v of voiceList) {
+    const o = document.createElement('option');
+    o.value = v.name;
+    o.textContent = v.name.replace(/^Microsoft /, '') + (v.localService ? '（オフライン）' : '（オンライン）');
+    sel.appendChild(o);
+  }
+  applyVoice();
+}
+
+// 記憶した音声を選ぶ。未設定なら既定の音声を選ぶ
+function applyVoice() {
+  const saved = store.get('voice:' + mode, '');
+  let v = voiceList.find(v => v.name === saved);
+  for (const re of DEFAULT_VOICE[mode]) v = v || voiceList.find(v => re.test(v.name));
+  v = v || voiceList[0];
+  if (v) $('voice').value = v.name;
+}
+
+function setMode(m) {
+  if (m === 'online' && !canOnline()) m = 'offline';
+  const changed = m !== mode;
+  mode = m;
+  $('rate').value = store.get('rate:' + m, 1.2);
+  showRate();
+  if (!$('modeBtn').disabled) $('modeBtn').textContent = MODE_LABEL[m];  // 切替中は「切替中…」のまま
+  $('modeBtn').classList.toggle('off', m === 'offline');
+  loadVoices();
+  if (changed) setStatus(MODE_LABEL[m] + 'に切り替えました');
+  if (playing) play();
+}
+setMode('offline');
+window.addEventListener('offline', () => setMode('offline'));
+// オフラインで開くと Edge はオンライン音声を一覧から外すため、接続が戻ったら一覧を何度か取り直す
+window.addEventListener('online', () => [500, 2000, 5000].forEach(ms => setTimeout(loadVoices, ms)));
+synth.addEventListener?.('voiceschanged', loadVoices);
+
+// オンライン音声で失敗したら（通信切れなど）、オフライン用に切り替えて同じ文から読み直す
+function onlineFailed() {
+  setMode('offline');
+  setStatus('オンライン音声が使えないため、オフライン用に切り替えました');
+}
+
+// 音声エンジンが読み間違える言葉を、渡す直前に読みやすい表記へ置き換える（画面の表示は変えない）
+const READING_RULES = [
+  // 単独の「人」＋助詞を「にん」と読むことがあるので「ひと」にする。
+  // 前が漢字・数字・カタカナ・英字の「人」（個人の、3人の、アメリカ人の など）と、後ろが漢字の「人」（人物、人数）は対象外
+  [/(^|[^㐀-鿿゠-ヿｦ-ﾟ0-9０-９A-Za-zＡ-Ｚａ-ｚ々〇])人(?=[のがはをにともへでや])/g, '$1ひと'],
+];
+// 読み方辞書（利用者が登録したもの）。長い表記から先に置き換え、短い表記が長い表記の一部を壊さないようにする
+let dict = store.get('dict', []);   // [{ from, to }]
+function fixReading(t) {
+  for (const { from, to } of [...dict].sort((a, b) => b.from.length - a.from.length)) t = t.split(from).join(to);
+  if (store.get('autoHito', true)) t = READING_RULES.reduce((s, [re, to]) => s.replace(re, to), t);
+  // URL は1文字ずつ読むと長いので「リンク」とだけ読む
+  t = t.replace(/(https?:\/\/|www\.)[!-~]+/g, 'リンク');
+  // 中黒「・」は音声エンジンが区切らずに続けて読むことがあるので、日本語の言葉の間なら読点にする
+  // （行頭の箇条書き記号は消す。「IT・AI」のように両側とも英数字ならそのまま）
+  t = t.replace(/^・+/, '').replace(/(.)・+(?=(.))/g, (m, a, b) => /[A-Za-z0-9]/.test(a) && /[A-Za-z0-9]/.test(b) ? a + '・' : a + '、');
+  // 全角スペースは音声エンジンが間を取らないので読点にする（直前が句読点や記号なら空白を消すだけ）
+  t = t.replace(/([、。，．！？：:）)」』])?　+/g, (m, p) => p ? p : '、').replace(/^、|、$/g, '');
+  return t;
+}
+
+function saveDict() {
+  store.set('dict', dict);
+  renderDict();
+}
+
+function renderDict() {
+  const tb = $('dictList');
+  tb.innerHTML = '';
+  if (!dict.length) {
+    tb.innerHTML = '<tr><td class="hint">まだ登録がありません</td></tr>';
+  }
+  dict.forEach((e, i) => {
+    const tr = document.createElement('tr');
+    const tdFrom = document.createElement('td'); tdFrom.textContent = e.from;
+    const tdTo = document.createElement('td'); tdTo.textContent = '→ ' + e.to;
+    const ops = document.createElement('td'); ops.className = 'ops';
+    const tryBtn = document.createElement('button'); tryBtn.textContent = '試し読み';
+    tryBtn.onclick = () => speakOnce(e.to);
+    const delBtn = document.createElement('button'); delBtn.textContent = '削除';
+    delBtn.onclick = () => { dict.splice(i, 1); saveDict(); };
+    ops.append(tryBtn, ' ', delBtn);
+    tr.append(tdFrom, tdTo, ops);
+    tb.appendChild(tr);
+  });
+  $('dictBulk').value = dict.map(e => `${e.from}=${e.to}`).join('\n');
+}
+
+// 1回だけ読む（辞書の試し読み用）。本文の読み上げは止める
+function speakOnce(text) {
+  stop();
+  const u = new SpeechSynthesisUtterance(text);
+  const v = voices.find(v => v.name === $('voice').value);
+  if (v) u.voice = v;
+  u.lang = v?.lang || 'ja-JP';
+  u.rate = parseFloat($('rate').value);
+  synth.speak(u);
+}
+
+function addDict(from, to) {
+  from = from.trim(); to = to.trim();
+  if (!from || !to) { setStatus('表記と読みの両方を入れてください'); return false; }
+  const old = dict.find(e => e.from === from);
+  if (old) old.to = to; else dict.push({ from, to });
+  saveDict();
+  setStatus(`辞書に登録しました：${from} → ${to}`);
+  return true;
+}
+
+function speakCurrent() {
+  const s = sentences[idx];
+  if (!s) { stop(); setStatus('最後まで読みました'); return; }
+  highlight(idx, true);
+  if (docKey) store.set(docKey, idx);
+  if (s.page) $('pageJump').placeholder = s.page;
+  const u = new SpeechSynthesisUtterance(fixReading(s.text));
+  const v = voices.find(v => v.name === $('voice').value);
+  if (v) u.voice = v;
+  u.lang = v?.lang || 'ja-JP';
+  u.rate = parseFloat($('rate').value);
+  const my = ++token;
+  u.onend = () => { if (playing && my === token) { idx++; speakCurrent(); } };
+  u.onerror = e => {
+    if (e.error === 'interrupted' || e.error === 'canceled' || !playing || my !== token) return;
+    if (v && !v.localService) { onlineFailed(); return; }  // setMode が同じ文から再生し直す
+    idx++; speakCurrent();
+  };
+  synth.speak(u);
+}
+
+function play(i) {
+  if (!sentences.length) return;
+  if (i !== undefined) idx = i;
+  playing = true;
+  token++;
+  synth.cancel();
+  clearTimeout(playTimer);
+  // iPhone / iPad はタップの処理中に speak しないと再生が許可されないので、待たずにすぐ読む
+  if (IS_IOS) { speakCurrent(); }
+  // Chrome などは cancel 直後の speak が無視される不具合への対策で少し待つ。連続で呼ばれても二重に読まないよう予約は1つだけ
+  else playTimer = setTimeout(speakCurrent, 60);
+  $('playBtn').textContent = '⏸ 一時停止';
+}
+
+function stop() {
+  clearTimeout(playTimer);
+  playing = false;
+  token++;
+  synth.cancel();
+  $('playBtn').textContent = '▶ 再生';
+}
+
+function showRate() { $('rateVal').textContent = parseFloat($('rate').value).toFixed(1) + '倍'; }
+
+function setStatus(t) { $('status').textContent = t; }
+
+// ---------- 操作 ----------
+$('openBtn').onclick = () => $('fileInput').click();
+$('fileInput').onchange = e => { const f = e.target.files[0]; if (f) loadPdf(f).catch(err => setStatus('読み込みに失敗しました: ' + err.message)); e.target.value = ''; };
+// 上部のボタン：開いている画面（貼り付け／読み方辞書）のボタンだけを強調する。
+// どちらも閉じていれば、いま表示している文章の出どころ（PDF／貼り付け）のボタンを強調する。
+// 貼り付けと読み方辞書は同時には開かない
+let source = 'pdf';
+function showPanel(name) {
+  const wasOpen = panelOpen('paste') || panelOpen('dict');
+  document.documentElement.style.setProperty('--hdr', document.querySelector('header').offsetHeight + 'px');
+  $('pasteBox').style.display = name === 'paste' ? 'block' : 'none';
+  $('dictBox').style.display = name === 'dict' ? 'block' : 'none';
+  const active = { paste: 'pasteToggle', dict: 'dictToggle' }[name] || (source === 'paste' ? 'pasteToggle' : 'openBtn');
+  for (const id of ['openBtn', 'pasteToggle', 'dictToggle']) {
+    $(id).classList.toggle('primary', id === active);
+    $(id).setAttribute('aria-pressed', id === active);
+  }
+  // 画面を閉じたら、読んでいた文の位置に表示を戻す
+  if (wasOpen && !name && sentences.length) highlight(idx, true);
+}
+const panelOpen = name => $(name === 'paste' ? 'pasteBox' : 'dictBox').style.display === 'block';
+$('pasteToggle').onclick = () => {
+  const open = !panelOpen('paste');
+  showPanel(open ? 'paste' : null);
+  if (open) $('pasteArea').focus({ preventScroll: true });
+};
+$('pasteRead').onclick = loadPasted;
+$('skipFig').checked = store.get('skipFig', true);
+$('skipFig').onchange = () => {
+  store.set('skipFig', $('skipFig').checked);
+  if (source !== 'pdf' || !pdfPages) return;
+  // 読んでいた文の位置をなるべく保ったまま組み立て直す
+  const wasPlaying = playing, curText = sentences[idx]?.text;
+  stop();
+  render(layoutPdf(), pdfNumPages);
+  const i = sentences.findIndex(s => s.text === curText);
+  if (i >= 0) { idx = i; highlight(idx, true); }
+  setStatus($('skipFig').checked ? '図や表を読み飛ばします' : '図や表も読み上げます');
+  if (wasPlaying) play();
+};
+$('modeBtn').onclick = async () => {
+  if ($('modeBtn').disabled) return;
+  if (mode === 'online') { setMode('offline'); return; }
+  if (canOnline()) { setMode('online'); return; }
+  // Wi-Fi をつなぎ直した直後は、PC が接続済みと判断するまで数秒かかるので待つ
+  const t0 = Date.now();
+  setSwitching(true);
+  if (!navigator.onLine) {
+    setStatus('インターネット接続を確認しています…（最大15秒）');
+    if (!await waitFor(() => navigator.onLine, 15000)) {
+      setSwitching(false);
+      setStatus('インターネットに接続されていないため、オンライン用は使えません');
+      return;
+    }
+  }
+  setStatus('オンライン音声を確認しています…');
+  if (await waitFor(canOnline, 1500)) {
+    setSwitching(false);
+    setMode('online');
+    setStatus(`オンライン用に切り替えました（${((Date.now() - t0) / 1000).toFixed(1)}秒）`);
+    return;
+  }
+  reloadForOnline(t0);
+};
+
+// オフラインで開いたページでは、接続が戻ってもブラウザがオンライン音声を一覧に戻さない。
+// そこで表示中の文章と位置をタブ内の一時領域（タブを閉じると消える）に預けて再読み込みし、復元する
+const RELOAD_KEY = 'reloadForOnline';
+function setSwitching(on) {
+  $('modeBtn').disabled = on;
+  if (on) $('modeBtn').textContent = '切替中…';
+  else $('modeBtn').textContent = MODE_LABEL[mode];
+}
+
+function reloadForOnline(t0 = Date.now()) {
+  stop();
+  setSwitching(true);
+  setStatus('オンライン音声を読み込むため、再読み込みしています…');
+  try { sessionStorage.setItem(RELOAD_KEY, JSON.stringify({ doc: currentDoc, idx, t0 })); } catch {}
+  location.reload();
+}
+
+// 条件が満たされるまで待つ。接続や音声一覧の変化の通知か 100ms ごとの確認で、満たされ次第すぐ返す
+function waitFor(cond, timeoutMs) {
+  return new Promise(resolve => {
+    if (cond()) return resolve(true);
+    const done = ok => {
+      clearInterval(iv); clearTimeout(to);
+      synth.removeEventListener?.('voiceschanged', check); window.removeEventListener('online', check);
+      resolve(ok);
+    };
+    const check = () => { if (cond()) done(true); };
+    const iv = setInterval(check, 100);
+    const to = setTimeout(() => done(false), timeoutMs);
+    synth.addEventListener?.('voiceschanged', check); window.addEventListener('online', check);
+  });
+}
+
+(async function restoreAfterReload() {
+  let saved = null;
+  try { saved = JSON.parse(sessionStorage.getItem(RELOAD_KEY)); sessionStorage.removeItem(RELOAD_KEY); } catch {}
+  if (!saved) return;
+  setSwitching(true);
+  if (saved.doc) {
+    docKey = saved.doc.docKey;
+    source = docKey ? 'pdf' : 'paste';
+    showPanel(null);
+    $('fileName').textContent = saved.doc.name;
+    render(saved.doc.paras, saved.doc.numPages);
+    idx = Math.min(saved.idx, sentences.length - 1);
+    highlight(idx, true);
+  }
+  setStatus('オンライン音声の準備を待っています…');
+  const ok = await waitFor(canOnline, 8000);
+  const sec = saved.t0 ? `（${((Date.now() - saved.t0) / 1000).toFixed(1)}秒）` : '';
+  setSwitching(false);
+  if (ok) { setMode('online'); setStatus('オンライン用に切り替えました' + sec); }
+  else setStatus('オンライン音声が見つかりませんでした（このブラウザには無いか、ネットに接続されていません）' + sec);
+})();
+$('playBtn').onclick = () => playing ? stop() : play();
+$('prevBtn').onclick = () => { if (idx > 0) { idx--; playing ? play() : highlight(idx, true); } };
+$('nextBtn').onclick = () => { if (idx < sentences.length - 1) { idx++; playing ? play() : highlight(idx, true); } };
+$('text').onclick = e => {
+  if (String(window.getSelection())) return;  // 言葉を選択しただけのときは読み上げない（辞書登録のため）
+  const s = e.target.closest('.s'); if (s) play(+s.dataset.i);
+};
+
+// ---------- 読み方辞書の操作 ----------
+// 本文で最後に選択した言葉を覚えておく（iPad ではボタンを押した時点で選択が外れることがあるため）
+let lastSel = '', lastSelAt = 0;
+document.addEventListener('selectionchange', () => {
+  const s = window.getSelection();
+  if (s && String(s).trim() && $('text').contains(s.anchorNode)) { lastSel = String(s).trim(); lastSelAt = Date.now(); }
+});
+$('dictToggle').onclick = () => {
+  const open = !panelOpen('dict');
+  // 本文で選択中（直前10秒以内に選択した）の言葉があれば表記の欄に入れる
+  const sel = Date.now() - lastSelAt < 10000 ? lastSel : '';
+  lastSel = ''; lastSelAt = 0;
+  showPanel(open || sel ? 'dict' : null);
+  if (sel && sel.length <= 30) { $('dictFrom').value = sel; $('dictTo').value = ''; $('dictTo').focus({ preventScroll: true }); }
+  else if (open) $('dictFrom').focus({ preventScroll: true });
+};
+$('dictAdd').onclick = () => { if (addDict($('dictFrom').value, $('dictTo').value)) { $('dictFrom').value = ''; $('dictTo').value = ''; } };
+$('dictTo').onkeydown = e => { if (e.key === 'Enter') $('dictAdd').click(); };
+$('dictTry').onclick = () => { if ($('dictTo').value.trim()) speakOnce($('dictTo').value); };
+$('autoHito').checked = store.get('autoHito', true);
+$('autoHito').onchange = () => store.set('autoHito', $('autoHito').checked);
+$('dictBulkSave').onclick = () => {
+  const list = [];
+  for (const line of $('dictBulk').value.split(/\r?\n/)) {
+    const m = line.match(/^\s*(.+?)\s*[=＝]\s*(.+?)\s*$/);
+    if (m) list.push({ from: m[1], to: m[2] });
+  }
+  dict = list.filter((e, i) => list.findIndex(o => o.from === e.from) === i);  // 同じ表記は最初の1つだけ
+  saveDict();
+  setStatus(`辞書を保存しました（${dict.length}語）`);
+};
+renderDict();
+$('rate').oninput = () => { showRate(); store.set('rate:' + mode, $('rate').value); };
+$('rate').onchange = () => { if (playing) play(); };
+const stepRate = d => {
+  const r = $('rate');
+  r.value = Math.min(3, Math.max(0.5, Math.round((parseFloat(r.value) + d) * 10) / 10));
+  r.oninput(); r.onchange();
+};
+$('rateDown').onclick = () => stepRate(-0.1);
+$('rateUp').onclick = () => stepRate(0.1);
+$('voice').onchange = () => { store.set('voice:' + mode, $('voice').value); if (playing) play(); };
+$('jumpBtn').onclick = () => {
+  const n = parseInt($('pageJump').value, 10);
+  const i = sentences.findIndex(s => s.page >= n);
+  if (i >= 0) { idx = i; playing ? play() : highlight(idx, true); }
+};
+document.addEventListener('keydown', e => {
+  if (e.target.matches('textarea, input, select')) return;
+  if (e.code === 'Space') { e.preventDefault(); $('playBtn').click(); }
+  if (e.code === 'ArrowLeft') $('prevBtn').click();
+  if (e.code === 'ArrowRight') $('nextBtn').click();
+});
+
+// ドラッグ＆ドロップ（画面のどこに落としてもOK）
+const drop = $('drop');
+['dragenter', 'dragover'].forEach(t => window.addEventListener(t, e => { e.preventDefault(); drop.classList.add('over'); }));
+['dragleave', 'drop'].forEach(t => window.addEventListener(t, e => { e.preventDefault(); drop.classList.remove('over'); }));
+window.addEventListener('drop', e => {
+  const f = [...e.dataTransfer.files].find(f => /\.pdf$/i.test(f.name) || f.type === 'application/pdf');
+  if (f) loadPdf(f).catch(err => setStatus('読み込みに失敗しました: ' + err.message));
+});
+</script>
+</body>
+</html>
