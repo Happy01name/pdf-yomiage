@@ -1022,6 +1022,10 @@ $('jumpBtn').onclick = () => {
   const i = sentences.findIndex(s => s.page >= n);
   if (i >= 0) { idx = i; playing ? play() : highlight(idx, true); }
 };
+// ページ番号の欄で Enter を押したら「移動」と同じ動きにする（iPad のキーボードの「開く」「改行」も同じ）
+$('pageJump').onkeydown = e => {
+  if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); $('jumpBtn').click(); $('pageJump').blur(); }
+};
 document.addEventListener('keydown', e => {
   if (e.target.matches('textarea, input, select')) return;
   if (e.code === 'Space') { e.preventDefault(); $('playBtn').click(); }
