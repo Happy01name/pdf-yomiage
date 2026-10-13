@@ -47,6 +47,11 @@
     border-left: 3px solid var(--border); padding-left: 8px; word-break: break-all; }
   #text p.fig::before { content: '図・表（読み上げません）　'; font-weight: bold; }
   .opt { font-size: 13px; color: var(--muted); white-space: nowrap; }
+  /* 編集モード：段落ごとに枠を付けて、書き換えられることがわかるようにする */
+  body.editing #text p { outline: 1px dashed var(--accent); outline-offset: 4px; border-radius: 2px; cursor: text; }
+  body.editing #text p:focus { outline: 2px solid var(--accent); }
+  body.editing .s:hover { background: none; }
+  #editToggle.on { background: #f59e0b; color: #fff; border-color: #f59e0b; }
   .s { cursor: pointer; border-radius: 3px; }
   .s:hover { background: color-mix(in srgb, var(--hl) 50%, transparent); }
   .s.cur { background: var(--hl); }
@@ -108,6 +113,8 @@
   <button id="pasteToggle">テキストを貼り付け</button>
   <button id="dictToggle">読み方辞書</button>
   <button id="copyAll" title="表示中の文章をすべてコピーします（図・表の部分は除く）">全文コピー</button>
+  <button id="editToggle" title="本文を直接書き換えます（OCR の誤りの修正など）">編集</button>
+  <button id="editReset" hidden title="直した内容を捨てて、元の PDF の内容に戻します">編集を元に戻す</button>
   <label class="opt" title="スキャンした本などで、図や表の中の文字（文字化けのようなもの）を読み飛ばします"><input type="checkbox" id="skipFig"> 図や表を読まない</label>
   <span id="fileName"></span>
 </header>
@@ -549,15 +556,19 @@ async function loadPdf(file) {
   const rep = findRepeated(pages.map(ls => ls.map(l => l.text)));
   pdfPages = pages.map(ls => ls.filter(l => !(isPageNum(l.text) || rep.has(l.text.replace(/\d+/g, '#')))));
   pdfNumPages = pdf.numPages;
-  const paras = layoutPdf();
+  let paras = layoutPdf();
   if (!paras.some(p => !p.skip)) {
     setStatus('文字を取り出せませんでした（画像だけのPDFの可能性があります）');
     return;
   }
   docKey = 'pos:' + file.name + ':' + file.size;
+  // このPDFを以前に編集していれば、直した内容を使う
+  const edited = store.get('edit:' + docKey, null);
+  if (edited) paras = edited;
   source = 'pdf';
   showPanel(null);
   render(paras, pdf.numPages);
+  if (edited) setStatus(`${sentences.length} 文 ／ 以前に直した内容を表示しています（元に戻すときは「編集を元に戻す」）`);
 }
 
 // 取り出した行（ページ番号・ヘッダーを除いたもの）から段落を組み立てる。
@@ -606,25 +617,32 @@ function loadPasted() {
 // ---------- 表示 ----------
 let sentences = [];   // {text, page, el}
 let idx = 0, docKey = null, currentDoc = null;
+let editing = false;  // 本文の編集モード中か
 
 function render(paras, numPages) {
+  // 編集中に別の文章を開いたときなどは、編集モードを終える（直しかけの内容は反映しない）
+  if (editing) {
+    editing = false; document.body.classList.remove('editing');
+    $('editToggle').textContent = '編集'; $('editToggle').classList.remove('on');
+  }
   currentDoc = { paras, numPages, docKey, name: $('fileName').textContent };
   const box = $('text');
   box.innerHTML = '';
   sentences = [];
   $('drop').style.display = 'none';
   let lastPage = null;
-  for (const p of paras) {
+  paras.forEach((p, pi) => {
     if (p.page && p.page !== lastPage) {
       const d = document.createElement('div');
       d.className = 'pg'; d.textContent = `p.${p.page}`;
       box.appendChild(d); lastPage = p.page;
     }
     const el = document.createElement('p');
+    el.dataset.pi = pi;  // 編集したときに、どの段落かを対応づけるため
     if (p.skip) {  // 図や表：薄く表示するだけで、読み上げの対象にしない
       el.className = 'fig'; el.textContent = p.text; el.title = '図や表と判定したため読み上げません';
       box.appendChild(el);
-      continue;
+      return;
     }
     for (const s of splitSentences(p.text)) {
       const span = document.createElement('span');
@@ -634,7 +652,8 @@ function render(paras, numPages) {
       el.appendChild(span);
     }
     box.appendChild(el);
-  }
+  });
+  $('editReset').hidden = !(docKey && store.get('edit:' + docKey, null));
   $('pageJump').max = numPages || '';
   const saved = docKey ? store.get(docKey, 0) : 0;
   idx = Math.min(saved, sentences.length - 1);
@@ -739,6 +758,9 @@ let dict = store.get('dict', []);   // [{ from, to }]
 function fixReading(t) {
   for (const { from, to } of [...dict].sort((a, b) => b.from.length - a.from.length)) t = t.split(from).join(to);
   if (store.get('autoHito', true)) t = READING_RULES.reduce((s, [re, to]) => s.replace(re, to), t);
+  // 「〜的」を「まと」と読むことがあるので「てき」にする。漢字2文字以上やカタカナ語に続く「的」が対象
+  // （1文字の漢字に続く「私的」「知的」などは「わたしてき」と誤読されるおそれがあるので対象外。目的・標的・射的・端的も対象外）
+  t = t.replace(/([一-鿿]{2,}|[゠-ヿ]{2,})的/g, (m, w) => /[目標射端]$/.test(w) ? m : w + 'てき');
   // 「々」を「くりかえし」と読むことがあるので、直前の漢字に置き換える（楽々→楽楽、時々→時時）
   t = t.replace(/([㐀-鿿])々/g, '$1$1');
   // URL は1文字ずつ読むと長いので「リンク」とだけ読む
@@ -873,6 +895,56 @@ $('pasteToggle').onclick = () => {
   if (open) $('pasteArea').focus({ preventScroll: true });
 };
 $('pasteRead').onclick = loadPasted;
+// ---------- 本文の編集（OCR の誤りの修正など） ----------
+// 編集モードでは段落を直接書き換えられる。終えると段落の内容を読み上げ・全文コピーに反映し、
+// PDF ごとに端末に保存する（同じ PDF を開き直しても、直した内容を表示する）
+$('editToggle').onclick = () => {
+  if (!currentDoc?.paras.length) { setStatus('編集する文章がありません'); return; }
+  editing ? finishEdit() : startEdit();
+};
+function startEdit() {
+  stop();
+  editing = true;
+  document.body.classList.add('editing');
+  $('editToggle').textContent = '編集を終える';
+  $('editToggle').classList.add('on');
+  document.querySelectorAll('#text p').forEach(p => { p.contentEditable = 'true'; p.spellcheck = false; });
+  setStatus('編集モード：本文を直接書き換えられます（Enter で段落を分けられます）。終わったら「編集を終える」を押してください');
+}
+function finishEdit() {
+  editing = false;
+  document.body.classList.remove('editing');
+  $('editToggle').textContent = '編集';
+  $('editToggle').classList.remove('on');
+  // 画面の段落から内容を集め直す。段落の中の改行は段落の区切り、空になった段落は削除
+  const old = currentDoc.paras, paras = [];
+  let changed = false;
+  document.querySelectorAll('#text p').forEach(el => {
+    const src = old[+el.dataset.pi];
+    const parts = el.innerText.split(/\n+/).map(t => t.replace(/\s+$/, '').replace(/^\s+/, '')).filter(Boolean);
+    if (parts.join('\n') !== src.text) changed = true;
+    for (const t of parts) paras.push({ ...src, text: t });
+  });
+  if (!changed) { render(old, currentDoc.numPages); setStatus('変更はありませんでした'); return; }
+  const top = $('scroller').scrollTop, curText = sentences[idx]?.text;
+  if (docKey) { try { localStorage.setItem('edit:' + docKey, JSON.stringify(paras)); } catch { setStatus('保存できませんでした（容量不足）'); } }
+  render(paras, currentDoc.numPages);
+  const i = sentences.findIndex(s => s.text === curText);
+  if (i >= 0) { idx = i; highlight(idx, false); }
+  $('scroller').scrollTop = top;
+  setStatus(docKey ? '直した内容を保存しました（読み上げと全文コピーに反映されます）' : '直した内容を反映しました');
+}
+$('editReset').onclick = () => {
+  if (!docKey || !pdfPages) return;
+  if (!confirm('このPDFで直した内容をすべて捨てて、元のPDFの内容に戻しますか？')) return;
+  if (editing) { editing = false; document.body.classList.remove('editing'); $('editToggle').textContent = '編集'; $('editToggle').classList.remove('on'); }
+  try { localStorage.removeItem('edit:' + docKey); } catch {}
+  const top = $('scroller').scrollTop;
+  render(layoutPdf(), pdfNumPages);
+  $('scroller').scrollTop = top;
+  setStatus('元のPDFの内容に戻しました');
+};
+
 // 全文コピー：表示中の文章を段落ごとに空行で区切ってコピーする（図・表として読み飛ばす部分は除く）
 $('copyAll').onclick = async () => {
   const paras = currentDoc?.paras.filter(p => !p.skip).map(p => p.text) || [];
@@ -896,6 +968,10 @@ $('skipFig').checked = store.get('skipFig', true);
 $('skipFig').onchange = () => {
   store.set('skipFig', $('skipFig').checked);
   if (source !== 'pdf' || !pdfPages) return;
+  if (docKey && store.get('edit:' + docKey, null)) {  // 直した内容は PDF から組み立て直すと消えるので切り替えない
+    setStatus('このPDFは編集済みのため、表示は変わりません（「編集を元に戻す」の後に切り替えられます）');
+    return;
+  }
   // 読んでいた文の位置をなるべく保ったまま組み立て直す
   const wasPlaying = playing, curText = sentences[idx]?.text;
   stop();
@@ -988,6 +1064,7 @@ $('playBtn').onclick = () => playing ? stop() : play();
 $('prevBtn').onclick = () => { if (idx > 0) { idx--; playing ? play() : highlight(idx, true); } };
 $('nextBtn').onclick = () => { if (idx < sentences.length - 1) { idx++; playing ? play() : highlight(idx, true); } };
 $('text').onclick = e => {
+  if (editing) return;                        // 編集中は、クリックで読み上げない
   if (String(window.getSelection())) return;  // 言葉を選択しただけのときは読み上げない（辞書登録のため）
   const s = e.target.closest('.s'); if (s) play(+s.dataset.i);
 };
@@ -1044,7 +1121,7 @@ $('pageJump').onkeydown = e => {
   if (e.key === 'Enter' && !e.isComposing) { e.preventDefault(); $('jumpBtn').click(); $('pageJump').blur(); }
 };
 document.addEventListener('keydown', e => {
-  if (e.target.matches('textarea, input, select')) return;
+  if (e.target.matches('textarea, input, select') || e.target.isContentEditable) return;  // 入力中・編集中はキー操作を奪わない
   if (e.code === 'Space') { e.preventDefault(); $('playBtn').click(); }
   if (e.code === 'ArrowLeft') $('prevBtn').click();
   if (e.code === 'ArrowRight') $('nextBtn').click();
