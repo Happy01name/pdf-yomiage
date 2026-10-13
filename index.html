@@ -287,7 +287,8 @@ function markParagraphs(lines) {
     // 次の行がすぐ下にあり、それより字下げされていて、ページの右端近くまで届いている＝段落の最初の行
     // （届かない行は、番号付き箇条書きの2行目や、入れ子の箇条書きの最後の項目などなので除く）
     const nextClose = !!next && gapAt(i + 1) > 0 && gapAt(i + 1) < l.h * 3;
-    l.indentStart = nextClose && inRange(l.x - next.x, l.h) && !l.endPara && l.right > pageRightOf(l) - l.h * 3;
+    l.indentStart = nextClose && inRange(l.x - next.x, l.h) && !l.endPara && l.right > pageRightOf(l) - l.h * 3
+      && !hangsFrom(l, prev);  // 記号付きの項目の2行目（ぶら下げ）は字下げではない
     // ページの先頭や2段組みの右の段の先頭は、前ページや左の段から続くことがあるのでつなぐ
     if (!prev || l.colStart) { l.newPara = l.indentStart; return; }
     const afterIndent = prev.indentStart && inRange(prev.x - l.x, l.h);  // 字下げした行の次の行
@@ -295,16 +296,21 @@ function markParagraphs(lines) {
     const aligned = !next || Math.abs(next.x - l.x) <= l.h * 0.6;
     // ただし1文字分を超える大きなずれ（入れ子の箇条書きから戻る行など）は、次の行が揃っていなくても別のかたまり
     const shift = Math.abs(l.x - prev.x);
-    const shifted = !afterIndent && ((shift > l.h * 0.6 && aligned) || shift > l.h * 1.2);
+    const shifted = !afterIndent && !hangsFrom(l, prev) && ((shift > l.h * 0.6 && aligned) || shift > l.h * 1.2);
     // 前後の行間より明らかに広い、または上に戻った（段組みやボックスの読み順）＝別のかたまり
     const g = gapAt(i), near = [gapAt(i - 1), gapAt(i + 1)].filter(v => v > 0);
     // （前後の行間は広いほうと比べる。図の中の文字などが挟まって一方だけ狭くなることがあるため）
     const farBelow = g <= 0 || (near.length > 0 && g > Math.max(...near) * 1.4);
-    const bullet = /^[・•●○◆◇■□▪▶►‣⁃\-－]/.test(l.text);  // 文字の箇条書き記号
+    const bullet = BULLET.test(l.text);  // 文字の箇条書き記号
     l.newPara = l.indentStart || shifted || farBelow || bullet;
   });
   markListItems(lines);
 }
+
+// 「◆」「・」などの記号で始まる項目の2行目以降は、記号の分だけ右から始まる（ぶら下げ）。
+// その行は別のかたまりではなく、同じ項目の続き
+const BULLET = /^[・•●○◆◇■□▪▶►‣⁃\-－]/;
+const hangsFrom = (l, prev) => !!prev && BULLET.test(prev.text) && l.x > prev.x && l.x - prev.x < l.h * 2.5;
 
 // 箇条書きの点が図形で描かれていると文字として取れないため、位置から項目の区切りを推定する。
 // 前の文章より右から始まり左端の揃った行のかたまりを箇条書きとみなし、その中で
@@ -318,7 +324,8 @@ function markListItems(lines) {
     let j = i + 1;
     while (j < lines.length && Math.abs(lines[j].x - lines[i].x) < h * 0.3 && !lines[j].newPara) j++;
     const before = lines[i - 1];
-    if (j - i >= 2 && before && lines[i].x - before.x > h && !lines[i].colStart) {  // 右の段の始まりは箇条書きではない
+    // 右の段の始まりや、記号付きの項目の2行目以降（ぶら下げ）は、箇条書きのかたまりではない
+    if (j - i >= 2 && before && lines[i].x - before.x > h && !lines[i].colStart && !hangsFrom(lines[i], before)) {
       const outer = lines.filter(o => o.x < lines[i].x - h * 0.5).map(o => o.right).sort((a, b) => a - b);
       const frameRight = Math.max(...lines.slice(i, j).map(l => l.right), outer.length ? outer[Math.floor(outer.length * 0.8)] : 0);
       for (let k = i; k < j - 1; k++) {
@@ -337,7 +344,8 @@ function markListItems(lines) {
 // （OCR で先頭に余計な文字が1〜2字付くことがある：「国■図6」など）
 const CAPTION = /^.{0,2}[■□◆●]\s*[図表]\s*[0-9０-９]|^[図表]\s*[0-9０-９]+[\s　]/;
 function textStats(t) {
-  const ch = [...t.replace(/[\s　]/g, '')], n = ch.length || 1;
+  // 行頭の箇条書きの記号（◆・● など）は数えない
+  const ch = [...t.replace(/^[・•●○◆◇■□▪▶►‣⁃]+/, '').replace(/[\s　]/g, '')], n = ch.length || 1;
   const c = re => ch.filter(x => re.test(x)).length;
   return {
     n: ch.length,
@@ -377,6 +385,11 @@ function markFigures(pages) {
         l.fig = false; inFigure = true; return;
       }
       const atLeft = atLeftOf(l), left = colOf(l).left;
+      // スライド（横長のページ）は文字の大きさや配置が自由なので、文字化けの判定だけを行う
+      if (l.slide) {
+        l.fig = (s.n >= 2 && (s.half >= 0.2 || s.sym >= 0.3)) || (s.n >= 6 && s.ichi >= 0.2);
+        return;
+      }
       if (inFigure) {
         const heading = atLeft && normalSize(l) && s.hira >= 0.15 && isBodyLine(lines[i + 1]);
         if (!isBodyLine(l) && !heading) { l.fig = true; return; }
@@ -527,6 +540,9 @@ async function loadPdf(file) {
     push();
     for (const l of lines) l.text = cleanLine(l.text);
     orderLines(lines, page.view[2] - page.view[0]);
+    // 横長のページ（スライド）は各ページが独立しているので、ページをまたいで文をつながない
+    const landscape = (page.view[2] - page.view[0]) > (page.view[3] - page.view[1]) * 1.2;
+    for (const l of lines) l.slide = landscape;
     pages.push(lines);
   }
 
@@ -558,7 +574,8 @@ function layoutPdf() {
     const body = ls.filter(l => !l.fig && !l.caption);
     markParagraphs(body);
     // ページの1行目は前ページの最後の行から続くことがあるのでつなぐが、左端が大きく違うなら別のかたまり
-    if (body[0] && lastLine && Math.abs(body[0].x - lastLine.x) > body[0].h * 1.2) body[0].newPara = true;
+    // スライド（横長のページ）は、ページの区切りを常に段落の区切りにする
+    if (body[0] && lastLine && (body[0].slide || Math.abs(body[0].x - lastLine.x) > body[0].h * 1.2)) body[0].newPara = true;
     if (body.length) lastLine = body[body.length - 1];
     for (const l of ls) all.push({ text: l.text, page: i + 1, newPara: l.newPara, endPara: l.endPara, fig: l.fig, caption: l.caption });
   });
