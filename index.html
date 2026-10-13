@@ -803,7 +803,10 @@ function fixReading(t) {
   t = t.replace(/(https?:\/\/|www\.)[!-~]+/g, 'リンク');
   // 箇条書きや飾りの記号・絵文字は、エンジンによって「ひしがた」と読んだり読まなかったりするので渡さない。
   // 文の先頭なら取り除き、途中なら読点にして少し間を取る（○×や％などの意味のある記号は残す）
-  const DECOR = /[■-◊◌-◮◰-◿☀-⭕←-⇿※]|\p{Extended_Pictographic}|[︎️‍]/u;  // ○（U+25CB）と◯（U+25EF）は残す
+  // 矢印は「東京→大阪」のように意味を持つので読む。エンジンで読み方が違うため「やじるし」にそろえる
+  // （「から」などで読ませたいときは、読み方辞書に「→=から」と登録すれば、そちらが先に使われる）
+  t = t.replace(/\s*[←-⇿➡⬅-⬇]️?\s*/g, 'やじるし');
+  const DECOR = /[■-◊◌-◮◰-◿☀-⭕※]|\p{Extended_Pictographic}|[︎️‍]/u;  // ○（U+25CB）と◯（U+25EF）は残す
   t = t.replace(new RegExp(`^(?:${DECOR.source}|\\s)+`, 'u'), '')
        .replace(new RegExp(`(?:${DECOR.source})+`, 'gu'), '、')
        .replace(/、\s*、+/g, '、').replace(/([、。，．！？])、/g, '$1');
