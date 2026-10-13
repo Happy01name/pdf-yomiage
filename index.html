@@ -70,7 +70,17 @@
     text-align: center; color: var(--muted); }
   #drop.over { border-color: var(--accent); color: var(--accent); }
   /* 貼り付けと読み方辞書の画面は、上部のボタンの下に固定して重ねる（開いても本文の表示位置が動かないように） */
-  #pasteBox, #dictBox { position: fixed; top: calc(var(--hdr, 56px) + 8px); left: 50%; transform: translateX(-50%);
+  #dataBox { display: none; padding: 12px; background: var(--panel); border: 1px solid var(--border); border-radius: 8px; }
+  #dataBox h2 { font-size: 15px; margin: 0 0 8px; }
+  #dataBox .hint { font-size: 12px; color: var(--muted); margin: 0 0 8px; }
+  #dataBox .row { display: flex; gap: 8px; align-items: center; justify-content: space-between; flex-wrap: wrap; }
+  #dataList { width: 100%; border-collapse: collapse; font-size: 14px; margin-bottom: 8px; }
+  #dataList th { text-align: left; font-size: 12px; color: var(--muted); font-weight: normal; padding: 4px 6px; }
+  #dataList td { border-top: 1px solid var(--border); padding: 4px 6px; vertical-align: top; }
+  #dataList td.name { word-break: break-all; }
+  #dataList td.ops { text-align: right; white-space: nowrap; }
+  #dataList button { padding: 2px 8px; font-size: 12px; }
+  #pasteBox, #dictBox, #dataBox { position: fixed; top: calc(var(--hdr, 56px) + 8px); left: 50%; transform: translateX(-50%);
     width: min(820px, calc(100% - 32px)); z-index: 3; max-height: 60vh; overflow: auto;
     box-shadow: 0 4px 16px rgba(0, 0, 0, 0.2); }
   #pasteBox { display: none; padding: 12px; background: var(--panel);
@@ -124,12 +134,22 @@
   <button id="copyAll" title="表示中の文章をすべてコピーします（図・表の部分は除く）">全文コピー</button>
   <button id="editToggle" title="本文を直接書き換えます（OCR の誤りの修正など）">編集</button>
   <button id="editReset" hidden title="直した内容を捨てて、元の PDF の内容に戻します">編集を元に戻す</button>
+  <button id="dataToggle" title="端末に保存しているデータ（読んだ位置・直した内容・辞書・設定）を確認・削除します">保存データ</button>
   <label class="opt" title="スキャンした本などで、図や表の中の文字（文字化けのようなもの）を読み飛ばします"><input type="checkbox" id="skipFig"> 図や表を読まない</label>
   <span id="fileName"></span>
 </header>
 
 <div id="scroller">
 <main>
+  <div id="dataBox">
+    <h2>保存データ</h2>
+    <p class="hint">このブラウザの中（localStorage）に保存しているデータです。外部には送っていません。学習が終わったら削除できます。</p>
+    <table id="dataList"></table>
+    <div class="row">
+      <span id="dataTotal" class="hint"></span>
+      <button id="dataAll">すべて削除</button>
+    </div>
+  </div>
   <div id="dictBox">
     <h2>読み方辞書</h2>
     <p class="hint">読み間違える言葉と、その読み方を登録します。本文の言葉を選択してから「読み方辞書」を押すと、表記の欄に入ります。画面の表示は変わりません。</p>
@@ -892,19 +912,101 @@ $('fileInput').onchange = e => { const f = e.target.files[0]; if (f) loadPdf(f).
 // 貼り付けと読み方辞書は同時には開かない
 let source = 'pdf';
 function showPanel(name) {
-  const wasOpen = panelOpen('paste') || panelOpen('dict');
+  const wasOpen = panelOpen('paste') || panelOpen('dict') || panelOpen('data');
   document.documentElement.style.setProperty('--hdr', document.querySelector('header').offsetHeight + 'px');
   $('pasteBox').style.display = name === 'paste' ? 'block' : 'none';
   $('dictBox').style.display = name === 'dict' ? 'block' : 'none';
-  const active = { paste: 'pasteToggle', dict: 'dictToggle' }[name] || (source === 'paste' ? 'pasteToggle' : 'openBtn');
-  for (const id of ['openBtn', 'pasteToggle', 'dictToggle']) {
+  $('dataBox').style.display = name === 'data' ? 'block' : 'none';
+  const active = { paste: 'pasteToggle', dict: 'dictToggle', data: 'dataToggle' }[name] || (source === 'paste' ? 'pasteToggle' : 'openBtn');
+  for (const id of ['openBtn', 'pasteToggle', 'dictToggle', 'dataToggle']) {
     $(id).classList.toggle('primary', id === active);
     $(id).setAttribute('aria-pressed', id === active);
   }
   // 画面を閉じたら、読んでいた文の位置に表示を戻す
   if (wasOpen && !name && sentences.length) highlight(idx, true);
 }
-const panelOpen = name => $(name === 'paste' ? 'pasteBox' : 'dictBox').style.display === 'block';
+const panelOpen = name => $({ paste: 'pasteBox', dict: 'dictBox', data: 'dataBox' }[name]).style.display === 'block';
+
+// ---------- 保存データの管理（学習が終わったら削除できるように） ----------
+// localStorage のキー：pos:ファイル名:サイズ（読んだ位置）、edit:pos:…（直した内容）、dict（辞書）、その他は設定
+// （PC で index.html を直接開いた場合、保存領域は PC 内の HTML ファイル全体で共有されるため、
+//   このアプリのキーだけを対象にし、丸ごと消去はしない）
+const SETTING_KEYS = ['autoHito', 'skipFig', 'rate:online', 'rate:offline', 'voice:online', 'voice:offline', 'mode', 'rate', 'voice'];
+const isAppKey = k => /^(edit:)?pos:.*:\d+$/.test(k) || k === 'dict' || SETTING_KEYS.includes(k);
+function lsEntries() {
+  const out = [];
+  try {
+    for (let i = 0; i < localStorage.length; i++) {
+      const k = localStorage.key(i);
+      if (isAppKey(k)) out.push({ k, bytes: (k.length + localStorage.getItem(k).length) * 2 });
+    }
+  } catch {}
+  return out;
+}
+function renderData() {
+  const all = lsEntries(), docs = new Map();
+  const docOf = key => { const m = key.match(/^pos:(.*):(\d+)$/); return m ? { id: key, name: m[1], size: +m[2] } : null; };
+  for (const e of all) {
+    const posKey = e.k.startsWith('edit:') ? e.k.slice(5) : e.k;
+    const d = docOf(posKey);
+    if (!d) continue;
+    if (!docs.has(d.id)) docs.set(d.id, { ...d, keys: [], pos: false, edit: 0 });
+    const doc = docs.get(d.id);
+    doc.keys.push(e.k);
+    if (e.k.startsWith('edit:')) doc.edit = e.bytes; else doc.pos = true;
+  }
+  const dictE = all.find(e => e.k === 'dict'), setE = all.filter(e => SETTING_KEYS.includes(e.k));
+  const tb = $('dataList');
+  tb.innerHTML = '<tr><th>内容</th><th>保存しているもの</th><th></th></tr>';
+  const row = (name, what, onDel) => {
+    const tr = document.createElement('tr');
+    const a = document.createElement('td'); a.className = 'name'; a.textContent = name;
+    const b = document.createElement('td'); b.textContent = what;
+    const c = document.createElement('td'); c.className = 'ops';
+    const del = document.createElement('button'); del.textContent = '削除'; del.onclick = onDel;
+    c.appendChild(del); tr.append(a, b, c); tb.appendChild(tr);
+  };
+  for (const d of docs.values()) {
+    const what = [d.pos ? '読んだ位置' : '', d.edit ? `直した内容（約${KB(d.edit)}）` : ''].filter(Boolean).join('、');
+    row(d.name, what, () => {
+      if (!confirm(`「${d.name}」の保存データ（${what}）を削除しますか？`)) return;
+      d.keys.forEach(k => { try { localStorage.removeItem(k); } catch {} });
+      afterDelete(d.keys);
+    });
+  }
+  if (dictE) row('読み方辞書', `${(store.get('dict', []) || []).length}語（約${KB(dictE.bytes)}）`, () => {
+    if (!confirm('読み方辞書をすべて削除しますか？（必要なら先に「まとめて編集」の内容を控えてください）')) return;
+    try { localStorage.removeItem('dict'); } catch {}
+    dict = []; renderDict(); afterDelete(['dict']);
+  });
+  if (setE.length) row('設定', '音声・速度・図や表を読まない など', () => {
+    if (!confirm('音声・速度などの設定を削除して、最初の状態に戻しますか？')) return;
+    setE.forEach(e => { try { localStorage.removeItem(e.k); } catch {} });
+    afterDelete(setE.map(e => e.k));
+  });
+  if (tb.rows.length === 1) tb.innerHTML = '<tr><td class="hint">保存しているデータはありません</td></tr>';
+  const total = all.reduce((n, e) => n + e.bytes, 0);
+  $('dataTotal').textContent = `合計 約${KB(total)}（目安の上限 約5MB）`;
+  $('dataAll').disabled = !all.length;
+}
+function afterDelete(keys) {
+  if (docKey && keys.includes('edit:' + docKey)) $('editReset').hidden = true;  // 開いている PDF の直した内容を消した場合
+  renderData();
+  setStatus('保存データを削除しました');
+}
+$('dataToggle').onclick = () => {
+  const open = !panelOpen('data');
+  showPanel(open ? 'data' : null);
+  if (open) renderData();
+};
+$('dataAll').onclick = () => {
+  if (!confirm('このアプリの保存データ（読んだ位置、直した内容、読み方辞書、設定）をすべて削除しますか？\n元に戻せません。')) return;
+  const keys = lsEntries().map(e => e.k);
+  keys.forEach(k => { try { localStorage.removeItem(k); } catch {} });
+  dict = []; renderDict();
+  afterDelete(keys.concat(docKey ? ['edit:' + docKey] : []));
+  setStatus('保存データをすべて削除しました');
+};
 $('pasteToggle').onclick = () => {
   const open = !panelOpen('paste');
   showPanel(open ? 'paste' : null);
