@@ -52,6 +52,15 @@
   body.editing #text p:focus { outline: 2px solid var(--accent); }
   body.editing .s:hover { background: none; }
   #editToggle.on { background: #f59e0b; color: #fff; border-color: #f59e0b; }
+  /* 保存の確認ダイアログ */
+  #saveDialog { max-width: min(520px, calc(100% - 32px)); border: 1px solid var(--border); border-radius: 10px;
+    background: var(--panel); color: var(--fg); padding: 16px 18px; box-shadow: 0 8px 30px rgba(0, 0, 0, 0.3); }
+  #saveDialog::backdrop { background: rgba(0, 0, 0, 0.35); }
+  #saveDialog h2 { font-size: 16px; margin: 0 0 10px; }
+  #saveDialog dl { margin: 0 0 12px; font-size: 14px; line-height: 1.6; }
+  #saveDialog dt { font-weight: bold; margin-top: 6px; }
+  #saveDialog dd { margin: 0 0 0 1em; }
+  #saveDialog .btns { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
   .s { cursor: pointer; border-radius: 3px; }
   .s:hover { background: color-mix(in srgb, var(--hl) 50%, transparent); }
   .s.cur { background: var(--hl); }
@@ -151,6 +160,16 @@
   <div id="text"></div>
 </main>
 </div>
+
+<dialog id="saveDialog">
+  <h2>直した内容をどうしますか？</h2>
+  <dl id="saveInfo"></dl>
+  <div class="btns">
+    <button id="saveBack">編集に戻る</button>
+    <button id="saveNo">保存せずに終える</button>
+    <button id="saveYes" class="primary">保存して終える</button>
+  </div>
+</dialog>
 
 <footer>
   <div class="grp">
@@ -621,10 +640,7 @@ let editing = false;  // 本文の編集モード中か
 
 function render(paras, numPages) {
   // 編集中に別の文章を開いたときなどは、編集モードを終える（直しかけの内容は反映しない）
-  if (editing) {
-    editing = false; document.body.classList.remove('editing');
-    $('editToggle').textContent = '編集'; $('editToggle').classList.remove('on');
-  }
+  if (editing) leaveEditUI();
   currentDoc = { paras, numPages, docKey, name: $('fileName').textContent };
   const box = $('text');
   box.innerHTML = '';
@@ -911,11 +927,15 @@ function startEdit() {
   document.querySelectorAll('#text p').forEach(p => { p.contentEditable = 'true'; p.spellcheck = false; });
   setStatus('編集モード：本文を直接書き換えられます（Enter で段落を分けられます）。終わったら「編集を終える」を押してください');
 }
-function finishEdit() {
+function leaveEditUI() {
   editing = false;
   document.body.classList.remove('editing');
   $('editToggle').textContent = '編集';
   $('editToggle').classList.remove('on');
+}
+
+// 「編集を終える」：変更があれば、保存先と容量を示して、保存するかどうかを選んでもらう
+function finishEdit() {
   // 画面の段落から内容を集め直す。段落の中の改行は段落の区切り、空になった段落は削除
   const old = currentDoc.paras, paras = [];
   let changed = false;
@@ -925,19 +945,64 @@ function finishEdit() {
     if (parts.join('\n') !== src.text) changed = true;
     for (const t of parts) paras.push({ ...src, text: t });
   });
-  if (!changed) { render(old, currentDoc.numPages); setStatus('変更はありませんでした'); return; }
+  if (!changed) { leaveEditUI(); render(old, currentDoc.numPages); setStatus('変更はありませんでした'); return; }
+  showSaveDialog(paras);
+}
+
+const KB = n => (n / 1024).toFixed(n < 10240 ? 1 : 0) + ' KB';
+function editStorageBytes() {  // 保存済みの編集データの合計（文字数×2バイトで概算）
+  let total = 0;
+  try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k.startsWith('edit:')) total += (k.length + localStorage.getItem(k).length) * 2; } } catch {}
+  return total;
+}
+function showSaveDialog(paras) {
+  const data = JSON.stringify(paras), bytes = data.length * 2;
+  const chars = paras.reduce((n, p) => n + p.text.length, 0);
+  const browser = /Edg\//.test(navigator.userAgent) ? 'Microsoft Edge' : /Chrome\//.test(navigator.userAgent) ? 'Google Chrome' : /Safari\//.test(navigator.userAgent) ? 'Safari' : 'このブラウザ';
+  const device = IS_IOS ? 'このiPad／iPhone' : 'このパソコン';
+  const prev = docKey ? store.get('edit:' + docKey, null) : null;
+  const others = editStorageBytes() - (prev ? (('edit:' + docKey).length + JSON.stringify(prev).length) * 2 : 0);
+  const info = $('saveInfo');
+  if (docKey) {
+    info.innerHTML = `
+      <dt>保存先</dt><dd>${device}の${browser}の中の保存領域（localStorage）。外部には送られません。ほかのブラウザや端末からは見えません</dd>
+      <dt>保存する内容</dt><dd>「<span id="saveName"></span>」の直した後の全文（約${chars.toLocaleString()}文字、約${KB(bytes)}）${prev ? '。以前に保存した内容は上書きされます' : ''}</dd>
+      <dt>保存後の使用量</dt><dd>編集データの合計 約${KB(others + bytes)}（このアプリが使える容量の目安は約5MB）</dd>
+      <dt>削除するには</dt><dd>このPDFを開いて「編集を元に戻す」を押します</dd>`;
+    $('saveName').textContent = currentDoc.name;
+    $('saveNo').hidden = false;
+    $('saveYes').textContent = '保存して終える';
+  } else {  // 貼り付けた文章は保存しない
+    info.innerHTML = '<dt>貼り付けた文章</dt><dd>直した内容は今だけ反映します。端末には保存しません（文章を貼り付け直すと元に戻ります）</dd>';
+    $('saveNo').hidden = true;
+    $('saveYes').textContent = '反映して終える';
+  }
+  const dlg = $('saveDialog');
+  $('saveBack').onclick = () => dlg.close();                       // 何もせずに編集を続ける
+  $('saveNo').onclick = () => { dlg.close(); applyEdit(paras, false); };
+  $('saveYes').onclick = () => { dlg.close(); applyEdit(paras, !!docKey); };
+  dlg.showModal();
+}
+
+function applyEdit(paras, save) {
+  leaveEditUI();
   const top = $('scroller').scrollTop, curText = sentences[idx]?.text;
-  if (docKey) { try { localStorage.setItem('edit:' + docKey, JSON.stringify(paras)); } catch { setStatus('保存できませんでした（容量不足）'); } }
+  let msg = '直した内容を反映しました（保存はしていません。PDFを開き直すと元に戻ります）';
+  if (!docKey) msg = '直した内容を反映しました';
+  if (save) {
+    try { localStorage.setItem('edit:' + docKey, JSON.stringify(paras)); msg = '直した内容を保存しました（読み上げと全文コピーに反映されます）'; }
+    catch { msg = '容量が足りず保存できませんでした。今だけ反映しています'; }
+  }
   render(paras, currentDoc.numPages);
   const i = sentences.findIndex(s => s.text === curText);
   if (i >= 0) { idx = i; highlight(idx, false); }
   $('scroller').scrollTop = top;
-  setStatus(docKey ? '直した内容を保存しました（読み上げと全文コピーに反映されます）' : '直した内容を反映しました');
+  setStatus(msg);
 }
 $('editReset').onclick = () => {
   if (!docKey || !pdfPages) return;
   if (!confirm('このPDFで直した内容をすべて捨てて、元のPDFの内容に戻しますか？')) return;
-  if (editing) { editing = false; document.body.classList.remove('editing'); $('editToggle').textContent = '編集'; $('editToggle').classList.remove('on'); }
+  if (editing) leaveEditUI();
   try { localStorage.removeItem('edit:' + docKey); } catch {}
   const top = $('scroller').scrollTop;
   render(layoutPdf(), pdfNumPages);
