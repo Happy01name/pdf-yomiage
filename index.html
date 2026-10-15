@@ -952,7 +952,27 @@ function lsEntries() {
   } catch {}
   return out;
 }
-function renderData() {
+// アプリ本体の保存分（Service Worker のキャッシュ）の容量。公開版でだけ使う
+async function appCacheInfo() {
+  if (!('caches' in window)) return null;
+  try {
+    const keys = (await caches.keys()).filter(k => k.startsWith('pdf-yomiage-app-'));
+    if (!keys.length) return null;
+    let bytes = 0, files = 0;
+    for (const k of keys) {
+      const c = await caches.open(k);
+      for (const req of await c.keys()) { const res = await c.match(req); if (res) { bytes += (await res.clone().blob()).size; files++; } }
+    }
+    return { keys, bytes, files };
+  } catch { return null; }
+}
+async function deleteAppCache(keys) {
+  try { for (const r of await navigator.serviceWorker.getRegistrations()) await r.unregister(); } catch {}
+  try { for (const k of keys) await caches.delete(k); } catch {}
+}
+
+async function renderData() {
+  const app = await appCacheInfo();
   const all = lsEntries(), docs = new Map();
   const docOf = key => { const m = key.match(/^pos:(.*):(\d+)$/); return m ? { id: key, name: m[1], size: +m[2] } : null; };
   for (const e of all) {
@@ -993,10 +1013,16 @@ function renderData() {
     setE.forEach(e => { try { localStorage.removeItem(e.k); } catch {} });
     afterDelete(setE.map(e => e.k));
   });
+  if (app) row('アプリ本体の保存分', `ネットなしで開くためのアプリのファイル ${app.files}個（約${KB(app.bytes)}）`, async () => {
+    if (!confirm('アプリ本体の保存分を削除しますか？\n削除すると、ネットがないときはアプリを開けなくなります。次にネットにつながった状態で開くと、また保存されます。')) return;
+    await deleteAppCache(app.keys);
+    renderData();
+    setStatus('アプリ本体の保存分を削除しました');
+  });
   if (tb.rows.length === 1) tb.innerHTML = '<tr><td class="hint">保存しているデータはありません</td></tr>';
   const total = all.reduce((n, e) => n + e.bytes, 0);
-  $('dataTotal').textContent = `合計 約${KB(total)}（目安の上限 約5MB）`;
-  $('dataAll').disabled = !all.length;
+  $('dataTotal').textContent = `合計 約${KB(total)}（目安の上限 約5MB）` + (app ? `　＋アプリ本体の保存分 約${KB(app.bytes)}` : '');
+  $('dataAll').disabled = !all.length && !app;
 }
 function afterDelete(keys) {
   if (docKey && keys.includes('edit:' + docKey)) $('editReset').hidden = true;  // 開いている PDF の直した内容を消した場合
@@ -1008,14 +1034,20 @@ $('dataToggle').onclick = () => {
   showPanel(open ? 'data' : null);
   if (open) renderData();
 };
-$('dataAll').onclick = () => {
-  if (!confirm('このアプリの保存データ（読んだ位置、直した内容、読み方辞書、設定）をすべて削除しますか？\n元に戻せません。')) return;
+$('dataAll').onclick = async () => {
+  if (!confirm('このアプリの保存データ（読んだ位置、直した内容、読み方辞書、設定、アプリ本体の保存分）をすべて削除しますか？\n元に戻せません。')) return;
   const keys = lsEntries().map(e => e.k);
   keys.forEach(k => { try { localStorage.removeItem(k); } catch {} });
+  const app = await appCacheInfo();
+  if (app) await deleteAppCache(app.keys);
   dict = []; renderDict();
   afterDelete(keys.concat(docKey ? ['edit:' + docKey] : []));
   setStatus('保存データをすべて削除しました');
 };
+// アプリ本体を端末に保存して、ネットがなくても開けるようにする（公開版＝https のときだけ。PC のローカル版では使わない）
+if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
+  navigator.serviceWorker.register('sw.js').catch(() => {});
+}
 $('pasteToggle').onclick = () => {
   const open = !panelOpen('paste');
   showPanel(open ? 'paste' : null);
@@ -1060,7 +1092,7 @@ function finishEdit() {
   showSaveDialog(paras);
 }
 
-const KB = n => (n / 1024).toFixed(n < 10240 ? 1 : 0) + ' KB';
+const KB = n => n >= 1048576 ? (n / 1048576).toFixed(1) + ' MB' : (n / 1024).toFixed(n < 10240 ? 1 : 0) + ' KB';
 function editStorageBytes() {  // 保存済みの編集データの合計（文字数×2バイトで概算）
   let total = 0;
   try { for (let i = 0; i < localStorage.length; i++) { const k = localStorage.key(i); if (k.startsWith('edit:')) total += (k.length + localStorage.getItem(k).length) * 2; } } catch {}
