@@ -504,6 +504,13 @@ function buildParagraphs(lines, join = true) {
 
 // 段落 → 文。長すぎる文は読点で分ける（iOS / Chrome が長文で止まるのを防ぐ）
 function splitSentences(text) {
+  // URL の中の「?」「!」で文を区切らないよう、区切る間だけ URL を目印に置き換えておく
+  const urls = [];
+  text = text.replace(/(https?:\/\/|www\.)[!-~]+/g, u => '' + (urls.push(u) - 1) + '');
+  const restore = s => s.replace(/(\d+)/g, (_, i) => urls[i]);
+  return splitPlain(text).map(restore);
+}
+function splitPlain(text) {
   const parts = text.match(/[^。！？!?]*[。！？!?]+[」』）)]*|[^。！？!?]+$/g) || [text];
   const out = [];
   for (let p of parts.map(s => s.trim()).filter(Boolean)) {
